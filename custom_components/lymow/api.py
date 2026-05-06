@@ -410,38 +410,47 @@ class LymowClient:
         return []
 
     async def get_device_info(self, thing_name: str) -> dict:
-        """GET /get-device-info with thingName as query param."""
+        """GET /get-device-info with deviceThingName as query param."""
         data = await self._api_get(
-            "deviceProfileApi", f"/get-device-info?thingName={thing_name}"
+            "deviceProfileApi", f"/get-device-info?deviceThingName={thing_name}"
         )
         return data or {}
 
     async def get_device_feature(self, thing_name: str) -> dict:
         data = await self._api_get(
-            "deviceProfileApi", f"/get-device-feature?thingName={thing_name}"
+            "deviceProfileApi", f"/get-device-feature?deviceThingName={thing_name}"
         )
         return data or {}
 
     async def get_clean_history(self, thing_name: str, page: int = 1, size: int = 10) -> list[dict]:
+        # Note: this endpoint lives on s3Api, NOT deviceProfileApi (verified from APK decompile).
+        # Returns {clean_history: [...], page, has_more, total_records, clean_summary}.
         data = await self._api_get(
-            "deviceProfileApi",
-            f"/get-clean-history-collect?thingName={thing_name}&page={page}&pageSize={size}",
+            "s3Api",
+            f"/get-clean-history-collect?deviceThingName={thing_name}&page={page}&pageSize={size}",
         )
-        if isinstance(data, list):
-            return data
         if isinstance(data, dict):
+            if isinstance(data.get("clean_history"), list):
+                return data["clean_history"]
             for k in ("data", "items", "list"):
                 if isinstance(data.get(k), list):
                     return data[k]
+        if isinstance(data, list):
+            return data
         return []
 
     async def get_backup_map(self, thing_name: str) -> dict | None:
         """Fetch saved map from S3 via proxy API."""
-        return await self._api_get("s3Api", f"/get-backup-map?thingName={thing_name}")
+        return await self._api_get("s3Api", f"/get-backup-map?deviceThingName={thing_name}")
 
     async def check_update(self, thing_name: str) -> dict:
-        """Check for OTA firmware updates."""
-        data = await self._api_post("checkUpdateApi", "/check-update", {"thingName": thing_name})
+        """Check for OTA firmware updates.
+
+        APK source uses GET with deviceThingName query string, NOT POST with body.
+        """
+        data = await self._api_get(
+            "checkUpdateApi", f"/check-update?deviceThingName={thing_name}"
+        )
         return data or {}
 
     async def check_force_update(self) -> dict:
