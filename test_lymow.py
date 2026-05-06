@@ -1,5 +1,5 @@
 """
-test_lymow.py — test completo con account reale
+test_lymow.py — Preliminary test
 pip install aiohttp pycognito
 """
 
@@ -39,7 +39,7 @@ async def main():
             print("Nessun device — usa l'account collegato al robot")
             return
 
-        # Prendi il primo robot
+        # Take firs robot
         d = devices[0]
         thing = d.get("thingName") or d.get("thing_name") or d.get("deviceId")
         print(f"\n→ Robot: {thing}")
@@ -68,12 +68,12 @@ async def main():
         s2 = await client.get_named_shadow(thing, f"{thing}-extended-shadow")
         print(json.dumps(s2, indent=2))
 
-        # 7. Stato completo merged
+        # 7. Complete state merged
         print("\n=== FULL STATE (merged) ===")
         full = await client.get_full_state(thing)
         print(json.dumps(full, indent=2))
 
-        # 8. Storico
+        # 8. History
         print("\n=== MOW HISTORY (ultimi 5) ===")
         history = await client.get_clean_history(thing, size=5)
         print(json.dumps(history, indent=2))
