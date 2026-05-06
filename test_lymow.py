@@ -12,7 +12,7 @@ import aiohttp
 sys.path.insert(0, "./custom_components")
 from lymow.api import CognitoAuth, LymowClient
 
-EMAIL    = "tua@email.com"    # ← account con robot associato
+EMAIL    = "tua@email.com"    # ← Fill with account
 PASSWORD = "tuaPassword"
 REGION   = "eu-west-1"
 
