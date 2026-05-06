@@ -1,4 +1,4 @@
-"""Constants for the Lymow integration"""
+"""Constants for the Lymow integration — field names verified from APK decompilation."""
 
 DOMAIN = "lymow"
 MANUFACTURER = "Lymow"

@@ -1,10 +1,14 @@
 """
 Lymow async API client.
-SigV4 signing implemented without boto3 (only aiohttp required).
+
+Auth:    pycognito (handles USER_SRP_AUTH — the only flow enabled on the Lymow Cognito client)
+REST:    aiohttp + SigV4 (no boto3 required at runtime)
+IoT:     AWS IoT Data HTTPS (SigV4 signed)
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -14,6 +18,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import aiohttp
+
+# pycognito handles the SRP challenge exchange transparently.
+# It uses boto3 under the hood only for the auth calls (not for IoT/API Gateway).
+try:
+    from pycognito import Cognito as _PyCognito
+    _HAS_PYCOGNITO = True
+except ImportError:
+    _HAS_PYCOGNITO = False
 
 from .const import API_ENDPOINTS, COGNITO_CONFIG
 
@@ -94,11 +106,23 @@ def _sigv4_headers(
 
 
 # ─────────────────────────────────────────────
-# Cognito auth (pure HTTP, no boto3)
+# Cognito auth via pycognito (USER_SRP_AUTH)
 # ─────────────────────────────────────────────
 
 class CognitoAuth:
+    """
+    Handles Cognito SRP login + Identity Pool credential exchange.
+
+    Uses pycognito for the SRP challenge (USER_SRP_AUTH — the only flow
+    enabled on the Lymow Cognito app client).
+    The Identity Pool exchange and everything else is done with plain aiohttp.
+    """
+
     def __init__(self, region: str, session: aiohttp.ClientSession) -> None:
+        if not _HAS_PYCOGNITO:
+            raise LymowAuthError(
+                "pycognito is required: pip install pycognito"
+            )
         self._region  = region
         self._session = session
         self._cfg     = COGNITO_CONFIG[region]
@@ -113,86 +137,116 @@ class CognitoAuth:
         self.session_token:     str | None = None
         self._creds_expiry:     datetime | None = None
 
-    # ── Cognito IDP ──────────────────────────
+        self._email:    str | None = None
+        self._password: str | None = None
 
-    async def _idp(self, target: str, body: dict) -> dict:
-        url = f"https://cognito-idp.{self._region}.amazonaws.com/"
-        headers = {
-            "Content-Type": "application/x-amz-json-1.1",
-            "X-Amz-Target": f"AWSCognitoIdentityProviderService.{target}",
-        }
-        async with self._session.post(url, json=body, headers=headers) as r:
-            data = await r.json(content_type=None)
-            if r.status != 200:
-                raise LymowAuthError(f"Cognito {target}: {data}")
-            return data
+    # ── SRP login via pycognito ──────────────
 
     async def login(self, email: str, password: str) -> None:
-        _LOGGER.debug("Cognito login: %s @ %s", email, self._region)
-        data = await self._idp("InitiateAuth", {
-            "AuthFlow": "USER_PASSWORD_AUTH",
-            "AuthParameters": {"USERNAME": email, "PASSWORD": password},
-            "ClientId": self._cfg["client_id"],
-        })
-        self._store_tokens(data["AuthenticationResult"])
+        """
+        Authenticate with USER_SRP_AUTH via pycognito.
+        pycognito calls are blocking/sync — we run them in a thread executor
+        so we don't block the HA event loop.
+        """
+        _LOGGER.debug("SRP login: %s @ %s", email, self._region)
+
+        def _do_srp() -> tuple[str, str, str]:
+            u = _PyCognito(
+                user_pool_id=self._cfg["user_pool_id"],
+                client_id=self._cfg["client_id"],
+                user_pool_region=self._region,
+                username=email,
+            )
+            u.authenticate(password=password)
+            return u.id_token, u.access_token, u.refresh_token
+
+        try:
+            loop = asyncio.get_event_loop()
+            id_t, acc_t, ref_t = await loop.run_in_executor(None, _do_srp)
+        except Exception as e:
+            raise LymowAuthError(f"SRP login failed: {e}") from e
+
+        self.id_token      = id_t
+        self.access_token  = acc_t
+        self.refresh_token = ref_t
+        self._token_expiry = datetime.now(UTC) + timedelta(hours=1)
+        self._email        = email
+        self._password     = password
+        _LOGGER.debug("SRP login OK")
 
     async def refresh(self) -> None:
-        if not self.refresh_token:
-            raise LymowAuthError("No refresh token")
-        data = await self._idp("InitiateAuth", {
-            "AuthFlow": "REFRESH_TOKEN_AUTH",
-            "AuthParameters": {"REFRESH_TOKEN": self.refresh_token},
-            "ClientId": self._cfg["client_id"],
-        })
-        r = data["AuthenticationResult"]
-        self.id_token    = r["IdToken"]
-        self.access_token = r["AccessToken"]
-        self._token_expiry = datetime.now(UTC) + timedelta(seconds=r.get("ExpiresIn", 3600))
+        """Refresh tokens using the stored refresh token."""
+        if not self.refresh_token or not self._email:
+            raise LymowAuthError("No refresh token — re-login required")
+        _LOGGER.debug("Refreshing Cognito tokens")
 
-    def _store_tokens(self, r: dict) -> None:
-        self.id_token      = r["IdToken"]
-        self.access_token  = r["AccessToken"]
-        self.refresh_token = r.get("RefreshToken", self.refresh_token)
-        self._token_expiry = datetime.now(UTC) + timedelta(seconds=r.get("ExpiresIn", 3600))
+        def _do_refresh() -> tuple[str, str]:
+            u = _PyCognito(
+                user_pool_id=self._cfg["user_pool_id"],
+                client_id=self._cfg["client_id"],
+                user_pool_region=self._region,
+                username=self._email,
+                id_token=self.id_token,
+                refresh_token=self.refresh_token,
+                access_token=self.access_token,
+            )
+            u.renew_access_token()
+            return u.id_token, u.access_token
 
-    # ── Cognito Identity ──────────────────────
+        try:
+            loop = asyncio.get_event_loop()
+            id_t, acc_t = await loop.run_in_executor(None, _do_refresh)
+        except Exception as e:
+            raise LymowAuthError(f"Token refresh failed: {e}") from e
 
-    async def _identity(self, target: str, body: dict) -> dict:
-        url = f"https://cognito-identity.{self._region}.amazonaws.com/"
-        headers = {
-            "Content-Type": "application/x-amz-json-1.1",
-            "X-Amz-Target": f"AWSCognitoIdentityService.{target}",
-        }
-        async with self._session.post(url, json=body, headers=headers) as r:
-            data = await r.json(content_type=None)
-            if r.status != 200:
-                raise LymowAuthError(f"Cognito Identity {target}: {data}")
-            return data
+        self.id_token     = id_t
+        self.access_token = acc_t
+        self._token_expiry = datetime.now(UTC) + timedelta(hours=1)
+
+    # ── Identity Pool → AWS credentials ──────
 
     async def get_aws_credentials(self) -> None:
+        """Exchange IdToken for temporary AWS credentials (SigV4 signing)."""
         if not self.id_token:
             raise LymowAuthError("No IdToken — call login() first")
+
         logins = {
             f"cognito-idp.{self._region}.amazonaws.com/{self._cfg['user_pool_id']}": self.id_token
         }
-        identity = await self._identity("GetId", {
+
+        # Step 1: get Identity ID
+        id_url = f"https://cognito-identity.{self._region}.amazonaws.com/"
+        id_hdrs = {
+            "Content-Type": "application/x-amz-json-1.1",
+            "X-Amz-Target": "AWSCognitoIdentityService.GetId",
+        }
+        async with self._session.post(id_url, json={
             "IdentityPoolId": self._cfg["identity_pool_id"],
             "Logins": logins,
-        })
-        creds_data = await self._identity("GetCredentialsForIdentity", {
-            "IdentityId": identity["IdentityId"],
+        }, headers=id_hdrs) as r:
+            data = await r.json(content_type=None)
+            if r.status != 200:
+                raise LymowAuthError(f"GetId failed: {data}")
+            identity_id = data["IdentityId"]
+
+        # Step 2: get credentials for that identity
+        async with self._session.post(id_url, json={
+            "IdentityId": identity_id,
             "Logins": logins,
-        })
-        c = creds_data["Credentials"]
+        }, headers={**id_hdrs, "X-Amz-Target": "AWSCognitoIdentityService.GetCredentialsForIdentity"}) as r:
+            data = await r.json(content_type=None)
+            if r.status != 200:
+                raise LymowAuthError(f"GetCredentialsForIdentity failed: {data}")
+            c = data["Credentials"]
+
         self.access_key_id     = c["AccessKeyId"]
         self.secret_access_key = c["SecretKey"]
         self.session_token     = c["SessionToken"]
         exp = c["Expiration"]
         self._creds_expiry = (
-            datetime.fromtimestamp(exp, UTC) if isinstance(exp, (int, float))
-            else None
+            datetime.fromtimestamp(exp, UTC) if isinstance(exp, (int, float)) else None
         )
-        _LOGGER.debug("AWS credentials obtained, expire: %s", self._creds_expiry)
+        _LOGGER.debug("AWS credentials OK, expire: %s", self._creds_expiry)
 
     # ── Token lifecycle ───────────────────────
 
@@ -207,13 +261,25 @@ class CognitoAuth:
         return datetime.now(UTC) >= (self._creds_expiry - timedelta(minutes=10))
 
     async def ensure_valid(self, email: str | None = None, password: str | None = None) -> None:
+        """Refresh tokens/credentials proactively before they expire."""
+        _email    = email    or self._email
+        _password = password or self._password
+
         if self._tokens_expiring():
             if self.refresh_token:
-                await self.refresh()
-            elif email and password:
-                await self.login(email, password)
+                try:
+                    await self.refresh()
+                except LymowAuthError:
+                    # Refresh failed — fall back to full re-login
+                    if _email and _password:
+                        await self.login(_email, _password)
+                    else:
+                        raise
+            elif _email and _password:
+                await self.login(_email, _password)
             else:
-                raise LymowAuthError("Tokens expired and no credentials to re-login")
+                raise LymowAuthError("Tokens expired and no credentials available")
+
         if self._creds_expiring():
             await self.get_aws_credentials()
 
@@ -227,6 +293,7 @@ class CognitoAuth:
             "access_key_id":     self.access_key_id,
             "secret_access_key": self.secret_access_key,
             "session_token":     self.session_token,
+            "_email":            self._email,
         }
 
     def from_dict(self, d: dict) -> None:
@@ -236,6 +303,7 @@ class CognitoAuth:
         self.access_key_id     = d.get("access_key_id")
         self.secret_access_key = d.get("secret_access_key")
         self.session_token     = d.get("session_token")
+        self._email            = d.get("_email")
 
 
 # ─────────────────────────────────────────────
@@ -249,35 +317,69 @@ class LymowClient:
         self._session = session
         self._ep      = API_ENDPOINTS[region]
 
-    # ── SigV4 helpers ────────────────────────
+    # ── Auth helpers ─────────────────────────
 
-    def _hdrs(self, method: str, url: str, payload: bytes, service: str = "execute-api") -> dict:
-        return _sigv4_headers(
-            method=method, url=url, payload=payload,
-            service=service, region=self._region,
-            access_key=self._auth.access_key_id,
-            secret_key=self._auth.secret_access_key,
-            session_token=self._auth.session_token,
-        )
+    def _rest_headers(self, extra: dict | None = None) -> dict:
+        """
+        REST API Gateway uses Cognito AccessToken in Authorization header.
+        Verified from APK source: Authorization = getAuthSession().accessToken
+        No Bearer prefix, no SigV4.
+        """
+        h = {
+            "Content-Type":    "application/json",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Authorization":   self._auth.access_token,
+        }
+        if extra:
+            h.update(extra)
+        return h
 
-    async def _api(self, api: str, path: str, method: str = "POST", payload: dict | None = None) -> Any:
-        url  = self._ep[api] + path
-        body = json.dumps(payload).encode() if payload else b""
-        hdrs = {**self._hdrs(method, url, body), "Content-Type": "application/json"}
-        async with self._session.request(method, url, data=body, headers=hdrs) as r:
+    def _iot_headers(self, method: str, url: str, payload: bytes) -> dict:
+        """IoT Data endpoint uses SigV4 with Identity Pool credentials."""
+        return {
+            **_sigv4_headers(
+                method=method, url=url, payload=payload,
+                service="iotdata", region=self._region,
+                access_key=self._auth.access_key_id,
+                secret_key=self._auth.secret_access_key,
+                session_token=self._auth.session_token,
+            ),
+            "Content-Type": "application/json",
+        }
+
+    # ── REST API calls ────────────────────────
+
+    async def _api_get(self, api: str, path: str) -> Any:
+        url = self._ep[api] + path
+        async with self._session.get(url, headers=self._rest_headers()) as r:
             text = await r.text()
             if r.status >= 400:
-                _LOGGER.warning("REST %s%s → %s: %s", api, path, r.status, text)
+                _LOGGER.warning("GET %s%s → %s: %s", api, path, r.status, text)
                 return None
             try:
                 return json.loads(text)
             except json.JSONDecodeError:
                 return text
 
+    async def _api_post(self, api: str, path: str, payload: dict) -> Any:
+        url  = self._ep[api] + path
+        body = json.dumps(payload).encode()
+        async with self._session.post(url, data=body, headers=self._rest_headers()) as r:
+            text = await r.text()
+            if r.status >= 400:
+                _LOGGER.warning("POST %s%s → %s: %s", api, path, r.status, text)
+                return None
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return text
+
+    # ── IoT Shadow ────────────────────────────
+
     async def _iot(self, method: str, path: str, payload: dict | None = None) -> Any:
         url  = f"https://{self._ep['iotDomain']}{path}"
         body = json.dumps(payload).encode() if payload else b""
-        hdrs = {**self._hdrs(method, url, body, "iotdata"), "Content-Type": "application/json"}
+        hdrs = self._iot_headers(method, url, body)
         async with self._session.request(method, url, data=body, headers=hdrs) as r:
             text = await r.text()
             if r.status == 404:
@@ -293,7 +395,12 @@ class LymowClient:
     # ── Device management ─────────────────────
 
     async def get_device_list(self) -> list[dict]:
-        data = await self._api("deviceBindingApi", "/get-device-list", method="GET")
+        """
+        Real endpoint from APK source:
+        apiGet("deviceBindingApi", "/device-list-query?p=validation")
+        Response is a JSON array of device objects with 'thingName' field.
+        """
+        data = await self._api_get("deviceBindingApi", "/device-list-query?p=validation")
         if isinstance(data, list):
             return data
         if isinstance(data, dict):
@@ -303,12 +410,23 @@ class LymowClient:
         return []
 
     async def get_device_info(self, thing_name: str) -> dict:
-        data = await self._api("deviceProfileApi", "/get-device-info", payload={"thingName": thing_name})
+        """GET /get-device-info with thingName as query param."""
+        data = await self._api_get(
+            "deviceProfileApi", f"/get-device-info?thingName={thing_name}"
+        )
+        return data or {}
+
+    async def get_device_feature(self, thing_name: str) -> dict:
+        data = await self._api_get(
+            "deviceProfileApi", f"/get-device-feature?thingName={thing_name}"
+        )
         return data or {}
 
     async def get_clean_history(self, thing_name: str, page: int = 1, size: int = 10) -> list[dict]:
-        data = await self._api("deviceProfileApi", "/get-clean-history-collect",
-                               payload={"thingName": thing_name, "page": page, "pageSize": size})
+        data = await self._api_get(
+            "deviceProfileApi",
+            f"/get-clean-history-collect?thingName={thing_name}&page={page}&pageSize={size}",
+        )
         if isinstance(data, list):
             return data
         if isinstance(data, dict):
@@ -318,47 +436,51 @@ class LymowClient:
         return []
 
     async def get_backup_map(self, thing_name: str) -> dict | None:
-        return await self._api("s3Api", "/get-backup-map", payload={"thingName": thing_name})
+        """Fetch saved map from S3 via proxy API."""
+        return await self._api_get("s3Api", f"/get-backup-map?thingName={thing_name}")
 
-    async def check_update(self, thing_name: str, current_fw: str) -> dict:
-        return await self._api("checkUpdateApi", "/check-update",
-                               payload={"thingName": thing_name, "currentVersion": current_fw}) or {}
+    async def check_update(self, thing_name: str) -> dict:
+        """Check for OTA firmware updates."""
+        data = await self._api_post("checkUpdateApi", "/check-update", {"thingName": thing_name})
+        return data or {}
 
-    # ── IoT Shadow ────────────────────────────
+    async def check_force_update(self) -> dict:
+        """Check if app/firmware force update is required."""
+        data = await self._api_post("deviceBindingApi", "/check-app-force-update", {})
+        return data or {}
 
-    async def _shadow_reported(self, data: Any) -> dict:
-        """Extract reported state from shadow response."""
+    # ── IoT Shadow state + commands ───────────
+
+    @staticmethod
+    def _reported(data: Any) -> dict:
         if not isinstance(data, dict):
             return {}
         return data.get("state", {}).get("reported", {})
 
     async def get_shadow(self, thing_name: str) -> dict:
-        data = await self._iot("GET", f"/things/{thing_name}/shadow")
-        return await self._shadow_reported(data)
+        return self._reported(await self._iot("GET", f"/things/{thing_name}/shadow"))
 
     async def get_named_shadow(self, thing_name: str, shadow_name: str) -> dict:
-        data = await self._iot("GET", f"/things/{thing_name}/shadow?name={shadow_name}")
-        return await self._shadow_reported(data)
+        return self._reported(
+            await self._iot("GET", f"/things/{thing_name}/shadow?name={shadow_name}")
+        )
 
     async def update_shadow(self, thing_name: str, desired: dict) -> bool:
-        result = await self._iot("POST", f"/things/{thing_name}/shadow",
-                                 {"state": {"desired": desired}})
+        result = await self._iot(
+            "POST", f"/things/{thing_name}/shadow", {"state": {"desired": desired}}
+        )
         return result is not None
 
     async def get_full_state(self, thing_name: str) -> dict:
         """
-        Merge all known shadows (low-priority first, main shadow wins).
-        Named shadows from APK: '{thing}-shadow', '{thing}-extended-shadow'
+        Merge all known shadows. Named shadows from APK:
+        '{thing}-shadow' and '{thing}-extended-shadow'
+        Main shadow wins on key conflicts.
         """
         ext2 = await self.get_named_shadow(thing_name, f"{thing_name}-extended-shadow")
         ext1 = await self.get_named_shadow(thing_name, f"{thing_name}-shadow")
         main = await self.get_shadow(thing_name)
-
-        merged: dict = {}
-        merged.update(ext2)
-        merged.update(ext1)
-        merged.update(main)  # main shadow wins conflicts
-        return merged
+        return {**ext2, **ext1, **main}
 
     # ── Robot commands ────────────────────────
     # workStatus values sent as integers (RobotStatus enum)
