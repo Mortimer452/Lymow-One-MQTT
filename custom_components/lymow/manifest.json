@@ -1,0 +1,14 @@
+{
+  "domain": "lymow",
+  "name": "Lymow HA Integration",
+  "version": "1.0.0",
+  "config_flow": true,
+  "documentation": "https://github.com/d3dfantasy99/Lymow-HA",
+  "requirements": [],
+  "dependencies": [],
+  "codeowners": [
+    "@d3dfantasy99"
+  ],
+  "iot_class": "cloud_polling",
+  "single_config_entry": false
+}

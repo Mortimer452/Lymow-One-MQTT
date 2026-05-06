@@ -1,0 +1,79 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Lymow Robot Mower",
+        "description": "Enter your Lymow app credentials",
+        "data": {
+          "email": "Email",
+          "password": "Password",
+          "region": "AWS Region (choose the one closest to you)"
+        }
+      },
+      "select_device": {
+        "title": "Select Robot",
+        "description": "Multiple robots found on this account",
+        "data": {
+          "thing_name": "Robot"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid email or password",
+      "cannot_connect": "Cannot connect to Lymow servers",
+      "unknown": "Unexpected error — check the HA logs"
+    },
+    "abort": {
+      "already_configured": "This robot is already configured",
+      "no_devices": "No robots found on this account"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Lymow Options",
+        "data": {
+          "scan_interval": "Poll interval (seconds, 10–300)"
+        }
+      }
+    }
+  },
+  "services": {
+    "start_zone": {
+      "name": "Start Zone",
+      "description": "Start mowing one or more specific zones",
+      "fields": {
+        "entry_id": {
+          "name": "Entry ID",
+          "description": "Config entry ID — optional if you only have one robot"
+        },
+        "zone_ids": {
+          "name": "Zone IDs",
+          "description": "List of zone hash IDs to mow (empty = all zones)"
+        }
+      }
+    },
+    "set_blade_height": {
+      "name": "Set Blade Height",
+      "description": "Set the cutting blade height in mm",
+      "fields": {
+        "entry_id": {"name": "Entry ID", "description": "Config entry ID"},
+        "height_mm": {
+          "name": "Height (mm)",
+          "description": "Cutting height in millimeters — 20 to 60, step 5"
+        }
+      }
+    },
+    "set_schedule": {
+      "name": "Set Mowing Schedule",
+      "description": "Configure the weekly mowing schedule",
+      "fields": {
+        "entry_id": {"name": "Entry ID", "description": "Config entry ID"},
+        "schedules": {
+          "name": "Schedules",
+          "description": "List of schedule entries: [{day (0=Sun…6=Sat), startHour, startMin, duration (min)}]"
+        }
+      }
+    }
+  }
+}
