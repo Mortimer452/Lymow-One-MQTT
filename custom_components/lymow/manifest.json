@@ -1,7 +1,7 @@
 {
   "domain": "lymow",
   "name": "Lymow HA Integration",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "config_flow": true,
   "documentation": "https://github.com/d3dfantasy99/Lymow-HA",
   "requirements": ["pycognito==2024.5.1"],
@@ -11,5 +11,5 @@
   ],
   "iot_class": "cloud_polling",
   "single_config_entry": false,
-  "hacs": "1.0.4"
+  "hacs": "1.0.5"
 }
