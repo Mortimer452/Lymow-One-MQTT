@@ -132,7 +132,7 @@ class LymowOptionsFlow(config_entries.OptionsFlow):
 
 
 def _thing_name(d: dict) -> str:
-    return d.get("thingName") or d.get("thing_name") or d.get("deviceId") or d.get("id") or str(d)
+    return d.get("deviceThingName") or d.get("thingName") or d.get("thing_name") or d.get("deviceId") or d.get("id") or str(d)
 
 def _label(d: dict) -> str:
     n = d.get("deviceName") or d.get("name") or d.get("alias") or _thing_name(d)
