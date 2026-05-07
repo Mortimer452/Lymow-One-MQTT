@@ -1,0 +1,54 @@
+start_zone:
+  name: Start Zone
+  description: Start mowing one or more specific zones
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Config entry ID (optional if only one robot)
+      required: false
+      selector:
+        text:
+    zone_ids:
+      name: Zone IDs
+      description: List of zone hash IDs to mow (empty = all zones)
+      required: false
+      selector:
+        object:
+
+set_blade_height:
+  name: Set Blade Height
+  description: Set the cutting blade height in mm
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Config entry ID
+      required: false
+      selector:
+        text:
+    height_mm:
+      name: Height (mm)
+      description: Cutting height in millimeters (20-60, step 5)
+      required: true
+      selector:
+        number:
+          min: 20
+          max: 60
+          step: 5
+          unit_of_measurement: mm
+
+set_schedule:
+  name: Set Mowing Schedule
+  description: Configure the weekly mowing schedule
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Config entry ID
+      required: false
+      selector:
+        text:
+    schedules:
+      name: Schedules
+      description: "List of schedule entries: [{day (0=Sun…6=Sat), startHour, startMin, duration (min)}]"
+      required: true
+      selector:
+        object:
