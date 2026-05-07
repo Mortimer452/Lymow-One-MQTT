@@ -3,7 +3,7 @@
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![GitHub release](https://img.shields.io/github/release/d3dfantasy99/Lymow-HA.svg)](https://github.com/d3dfantasy99/Lymow-HA/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Discord](https://img.shields.io/discord/rPyv8mcB?label=Discord&logo=discord)](https://discord.gg/rPyv8mcB)
+[![Discord](https://img.shields.io/discord/rPyv8mcB?label=Discord&logo=discord)](https://discord.gg/8kmYsP6ZRv)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-support-yellow?logo=buy-me-a-coffee)](https://buymeacoffee.com/d3dfantasy99)
 
 Unofficial Home Assistant integration for the **Lymow robot lawn mower**.  
@@ -185,7 +185,7 @@ Logs will appear in **Settings → System → Logs**. They include the full shad
 
 Join the community Discord server for help, feedback and discussion:
 
-[![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?logo=discord&logoColor=white)](https://discord.gg/rPyv8mcB)
+[![Discord](https://img.shields.io/badge/Discord-Join%20Server-5865F2?logo=discord&logoColor=white)](https://discord.gg/8kmYsP6ZRv)
 
 If you find this integration useful and want to support its development, you can buy me a coffee:
 
