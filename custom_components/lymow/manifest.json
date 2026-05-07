@@ -4,7 +4,7 @@
   "version": "1.0.1",
   "config_flow": true,
   "documentation": "https://github.com/d3dfantasy99/Lymow-HA",
-  "requirements": ["pycognito==0.4.3"],
+  "requirements": ["pycognito==2024.5.1"],
   "dependencies": [],
   "codeowners": [
     "@d3dfantasy99"
