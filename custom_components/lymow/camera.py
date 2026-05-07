@@ -1,11 +1,21 @@
 """
-Lymow camera platform — renders the lawn map as SVG.
+Lymow camera platform.
 
-Data sources (in priority order):
-  1. shadow field 'obsMap'         — obstacle/boundary map (real-time)
-  2. shadow field 'mapArea'        — total lawn area
-  3. /get-backup-map API response  — saved map from S3
-Zone data comes from the shadow fields: cleanZoneIds, goZoneHashIds, cutZoneHashId.
+Two camera entities:
+  1. LymowMapCamera  — SVG map rendered from zone/obstacle shadow data (always available)
+  2. LymowRTSPCamera — live video stream from the robot's onboard camera (requires local network)
+
+RTSP URL format (verified from APK source):
+  rtsp://<ipAddress>:10022/h264ESVideoTest
+  where ipAddress comes from the fwVersion.ipAddress shadow field.
+
+HA cannot snapshot RTSP natively without go2rtc or ffmpeg.
+LymowRTSPCamera exposes the URL via attributes so it can be used with go2rtc:
+
+  go2rtc:
+    streams:
+      lymow:
+        - "rtsp://{{ states('sensor.lymow_ip_address') }}:10022/h264ESVideoTest"
 """
 
 from __future__ import annotations
@@ -28,6 +38,8 @@ from .const import (
     F_MAP_AREA,
     F_OBS_MAP,
     RTK_STATUS_LABELS,
+    RTSP_PATH,
+    RTSP_PORT,
     WORK_STATUS_OFFLINE,
 )
 from .coordinator import LymowCoordinator
@@ -36,11 +48,26 @@ from .entity_base import LymowEntity
 _LOGGER = logging.getLogger(__name__)
 
 
+def _get_robot_ip(data: dict) -> str | None:
+    """
+    Extract the robot's local WiFi IP from the shadow state.
+    Priority: fwVersion.ipAddress → netDetailInfo.wifiIp → top-level ipAddress.
+    """
+    return (
+        (data.get("fwVersion") or {}).get("ipAddress")
+        or (data.get("netDetailInfo") or {}).get("wifiIp")
+        or data.get("ipAddress")
+    )
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     coord: LymowCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([LymowMapCamera(coord)], update_before_add=False)
+    async_add_entities(
+        [LymowMapCamera(coord), LymowRTSPCamera(coord)],
+        update_before_add=False,
+    )
 
 
 class LymowMapCamera(LymowEntity, Camera):
@@ -395,3 +422,55 @@ def _to_point(obj: Any) -> tuple[float, float] | None:
                 except (TypeError, ValueError):
                     pass
     return None
+
+
+class LymowRTSPCamera(LymowEntity, Camera):
+    """
+    Exposes the robot's live video camera stream.
+
+    The robot runs an RTSP server on port 10022. The URL is built dynamically
+    from the robot's current local IP address (fwVersion.ipAddress in the shadow).
+
+    HA cannot pull RTSP frames natively — this entity exposes the URL via the
+    'rtsp_url' attribute so external tools (go2rtc, VLC, ffmpeg) can consume it.
+
+    Recommended go2rtc config:
+      go2rtc:
+        streams:
+          lymow:
+            - "rtsp://{{ states('sensor.lymow_ip_address') }}:10022/h264ESVideoTest"
+    """
+
+    _attr_name         = "Live Camera"
+    _attr_icon         = "mdi:cctv"
+    _attr_content_type = "image/jpeg"
+    _attr_supported_features = CameraEntityFeature(0)
+
+    def __init__(self, coordinator: LymowCoordinator) -> None:
+        LymowEntity.__init__(self, coordinator, "rtsp_camera")
+        Camera.__init__(self)
+
+    @property
+    def available(self) -> bool:
+        # Only mark available when we know the robot's IP.
+        return bool(_get_robot_ip(self.coordinator.data or {}))
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        ip = _get_robot_ip(self.coordinator.data or {})
+        if not ip:
+            return {}
+        return {
+            "rtsp_url":  f"rtsp://{ip}:{RTSP_PORT}/{RTSP_PATH}",
+            "robot_ip":  ip,
+            "rtsp_port": RTSP_PORT,
+        }
+
+    async def async_camera_image(
+        self, width: int | None = None, height: int | None = None
+    ) -> bytes | None:
+        """
+        HA cannot snapshot RTSP without go2rtc/ffmpeg configured externally.
+        Returns None — use the rtsp_url attribute to connect an external player.
+        """
+        return None

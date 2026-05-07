@@ -210,6 +210,8 @@ SENSORS: tuple[LymowSensorDesc, ...] = (
         key="fw_version",
         name="Firmware",
         icon="mdi:chip",
+        # F_FW_VERSION is a string at the top level of the shadow,
+        # not the nested fwVersion object (F_FW_DATA).
         value_source=F_FW_VERSION,
         entity_registry_enabled_default=False,
     ),
@@ -218,6 +220,40 @@ SENSORS: tuple[LymowSensorDesc, ...] = (
         name="MCU Version",
         icon="mdi:memory",
         value_source=F_MCU_VERSION,
+        entity_registry_enabled_default=False,
+    ),
+
+    # ── Network / Camera ─────────────────────────────────────────────────
+    LymowSensorDesc(
+        key="ip_address",
+        name="IP Address",
+        icon="mdi:ip-network",
+        # ipAddress lives inside the nested fwVersion protobuf object (F_FW_DATA).
+        # Fallback chain: fwVersion.ipAddress → netDetailInfo.wifiIp → top-level ipAddress.
+        value_source=lambda d: (
+            (d.get("fwVersion") or {}).get("ipAddress")
+            or (d.get("netDetailInfo") or {}).get("wifiIp")
+            or d.get("ipAddress")
+        ),
+        entity_registry_enabled_default=False,
+    ),
+    LymowSensorDesc(
+        key="rtsp_url",
+        name="Camera URL",
+        icon="mdi:cctv",
+        # Full RTSP URL built the same way the official app does:
+        #   deviceProfile.ipAddress + ":10022/h264ESVideoTest"
+        # Use this sensor value in go2rtc or a Generic Camera entity.
+        # Disabled by default — enable if you want the URL as a sensor state.
+        value_source=lambda d: (
+            f"rtsp://{ip}:10022/h264ESVideoTest"
+            if (ip := (
+                (d.get("fwVersion") or {}).get("ipAddress")
+                or (d.get("netDetailInfo") or {}).get("wifiIp")
+                or d.get("ipAddress")
+            ))
+            else None
+        ),
         entity_registry_enabled_default=False,
     ),
 )

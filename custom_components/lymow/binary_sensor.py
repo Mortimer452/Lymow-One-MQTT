@@ -101,6 +101,24 @@ BINARY_SENSORS: tuple[LymowBinDesc, ...] = (
         value_fn=lambda d: bool(d.get("rainDelay") or d.get("rain_delay")),
         entity_registry_enabled_default=False,
     ),
+    LymowBinDesc(
+        key="lifted",
+        name="Lifted",
+        device_class=BinarySensorDeviceClass.TAMPER,
+        icon="mdi:hand-back-right",
+        # Lift is detected via errorCodes[] and warningCodes[] — there is no
+        # dedicated boolean field in the shadow. Verified from APK protobuf enums:
+        #   errorCodes:   7 = ERROR_FIRST_LIFT_BLOCKED
+        #                 8 = ERROR_SECOND_LIFT_BLOCKED
+        #   warningCodes: 5 = WARNING_FIRST_LIFT_TIMEOUT
+        #                 6 = WARNING_SECOND_LIFT_TIMEOUT
+        # Also checks the single errorCode field as fallback.
+        value_fn=lambda d: (
+            any(c in (d.get("errorCodes") or []) for c in (7, 8))
+            or any(c in (d.get("warningCodes") or []) for c in (5, 6))
+            or d.get("errorCode") in (7, 8)
+        ),
+    ),
 )
 
 
