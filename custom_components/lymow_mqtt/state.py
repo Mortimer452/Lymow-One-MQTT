@@ -80,7 +80,11 @@ def merge_pboutput(state_dict: dict[str, Any], msg) -> None:
     if "chargingStationLoc" in populated_names:
         state_dict["chargingStationLoc"] = msg.chargingStationLoc
 
-    # Repeated fields: replace when present, leave alone otherwise
+    # Repeated fields: replace when present, leave alone otherwise.
+    # NOTE: protobuf can't distinguish "field absent" from "deliberately empty list",
+    # so an explicit empty errorCodes list looks the same as "no errorCodes field" here.
+    # The coordinator (Phase 5) is responsible for clearing errorCodes when robotStatus
+    # transitions from 7 (Error) to non-7 — see arch.md §7c "error_cleared" recipe.
     if "errorCodes" in populated_names:
         state_dict["errorCodes"] = list(msg.errorCodes)
     if "warningCodes" in populated_names:
@@ -216,6 +220,9 @@ def resolve_online(
     # REST says offline. Check for fresh MQTT activity.
     if last_mqtt_at is None:
         return False
+    # Coerce naive datetimes to UTC — defensive, matches how callers should pass UTC-aware values.
+    if last_mqtt_at.tzinfo is None:
+        last_mqtt_at = last_mqtt_at.replace(tzinfo=UTC)
     if now is None:
         now = datetime.now(UTC)
     if (now - last_mqtt_at) < mqtt_recency_window:

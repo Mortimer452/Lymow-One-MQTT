@@ -28,7 +28,11 @@ def pick_pause_variant(work_status: int) -> int | None:
     Returns None if the mower is already in a paused state (no-op for HA UX).
     Raises ValueError if the state doesn't support pausing.
     """
-    if work_status in (WORK_STATUS_MOWING, WORK_STATUS_RESUME, WORK_STATUS_ZONE_PARTITION, WORK_STATUS_ESCAPING):
+    # Verified pauseable states only. ZONE_PARTITION (9) and ESCAPING (14)
+    # are in ACTIVE_TASK_WORK_STATUSES but pause behavior in those substates
+    # is unverified — firmware may silently ignore. Add to this list once
+    # characterized in arch.md §6d.
+    if work_status in (WORK_STATUS_MOWING, WORK_STATUS_RESUME):
         return USER_CTRL_PAUSE
     if work_status == WORK_STATUS_DOCKING:
         return USER_CTRL_PAUSE_DOCK
