@@ -195,3 +195,33 @@ class TestScheduleDecoder:
         assert schedules[0].hour == 14
         assert schedules[0].minute == 30
         assert schedules[0].id == 12345
+
+
+class TestErrorWarningExtraction:
+    def test_extract_error_codes_returns_list(self):
+        import lymow_extracted_pb2 as pb
+        msg = pb.PbOutput()
+        msg.errorCodes.append(45)
+        codes = protocol.extract_error_codes(msg)
+        assert codes == [45]
+
+    def test_extract_error_codes_empty_when_absent(self):
+        import lymow_extracted_pb2 as pb
+        msg = pb.PbOutput()
+        assert protocol.extract_error_codes(msg) == []
+
+    def test_extract_error_from_debug_description_url(self):
+        """Per arch.md §7c, debugSetting.description carries S3 URLs
+        with E-code in the filename: E45-v2.1.45-..."""
+        url = "s3://lymow-device-log-us-east-2/device_test/E45-v2.1.45-22-30-log.zip"
+        assert protocol.extract_error_from_debug_url(url) == 45
+
+    def test_extract_error_from_debug_description_no_code(self):
+        assert protocol.extract_error_from_debug_url("") is None
+        assert protocol.extract_error_from_debug_url("not a url") is None
+
+    def test_extract_warning_codes(self):
+        import lymow_extracted_pb2 as pb
+        msg = pb.PbOutput()
+        msg.warningCodes.append(4)
+        assert protocol.extract_warning_codes(msg) == [4]

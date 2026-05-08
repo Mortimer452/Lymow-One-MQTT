@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 
 from . import lymow_extracted_pb2 as pb
 
@@ -514,3 +515,43 @@ def decode_schedules(pb_schedules) -> list[ScheduleInfo]:
             )
         )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Error / warning code extraction
+# ---------------------------------------------------------------------------
+
+_E_CODE_REGEX = re.compile(r"/E(\d+)-")
+
+
+def extract_error_codes(msg: pb.PbOutput) -> list[int]:
+    """Return the list of currently-active error codes.
+
+    Per arch.md §7c, errorCodes is the preferred signal — populated
+    when robotStatus=Error. The list is packed repeated int32 and can
+    carry multiple simultaneous errors.
+    """
+    return list(msg.errorCodes)
+
+
+def extract_warning_codes(msg: pb.PbOutput) -> list[int]:
+    """Return the list of currently-active warning codes.
+
+    Known: warningCodes=[4] is tip-over (arch.md §11). Other values
+    likely exist; map as observed.
+    """
+    return list(msg.warningCodes)
+
+
+def extract_error_from_debug_url(description: str) -> int | None:
+    """Extract error code from a debugSetting.description S3 log URL.
+
+    Format: s3://.../device_X/E<code>-v<fw>-<HH-MM>-log.zip
+    Used as a fallback signal for error onset (arch.md §7c).
+    """
+    if not description:
+        return None
+    match = _E_CODE_REGEX.search(description)
+    if match:
+        return int(match.group(1))
+    return None
