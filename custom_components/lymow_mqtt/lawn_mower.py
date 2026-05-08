@@ -1,5 +1,4 @@
-"""Lymow LawnMower platform."""
-
+"""Lymow lawn_mower entity — start/pause/dock with smart variant dispatch."""
 from __future__ import annotations
 
 from homeassistant.components.lawn_mower import (
@@ -12,28 +11,25 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
-    DOCKED_STATUSES,
     DOMAIN,
-    ERROR_STATUSES,
-    MOWING_STATUSES,
-    PAUSED_STATUSES,
-    RETURNING_STATUSES,
-    WORK_STATUS_OFFLINE,
-    error_label,
-    F_ERROR_CODE,
-    F_ERROR_CODES,
-    F_CLEAN_ZONE_IDS,
-    F_GO_ZONE_IDS,
-    F_CUT_ZONE_ID,
-    F_CLEAN_AREA,
-    F_MAP_AREA,
-    F_RTK_STATUS,
-    RTK_STATUS_LABELS,
+    WORK_STATUS_CHARGING,
+    WORK_STATUS_CHARGING_FULL,
+    WORK_STATUS_DOCKING,
+    WORK_STATUS_EMERGENCY_STOP,
+    WORK_STATUS_ERROR,
+    WORK_STATUS_ESCAPING,
+    WORK_STATUS_MOWING,
+    WORK_STATUS_NONE,
+    WORK_STATUS_PAUSE,
+    WORK_STATUS_PAUSE_DOCKING,
+    WORK_STATUS_RESUME,
+    WORK_STATUS_WAITING,
+    WORK_STATUS_ZONE_PARTITION,
 )
 from .coordinator import LymowCoordinator
 from .entity_base import LymowEntity
 
-FEATURES = (
+_FEATURES = (
     LawnMowerEntityFeature.START_MOWING
     | LawnMowerEntityFeature.PAUSE
     | LawnMowerEntityFeature.DOCK
@@ -44,75 +40,61 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     coord: LymowCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([LymowMower(coord)], update_before_add=False)
+    async_add_entities([LymowMower(coord)])
 
 
 class LymowMower(LymowEntity, LawnMowerEntity):
     """Lymow robot mower entity."""
 
-    _attr_name            = None  # use device name as entity name
-    _attr_supported_features = FEATURES
+    _attr_name = None  # use device name
+    _attr_supported_features = _FEATURES
 
     def __init__(self, coordinator: LymowCoordinator) -> None:
         super().__init__(coordinator, "mower")
 
     @property
     def activity(self) -> LawnMowerActivity:
-        status = self.coordinator.work_status
-        if status in MOWING_STATUSES:
+        s = self.coordinator.state_dict.get("robotInfo")
+        if s is None:
+            return LawnMowerActivity.ERROR
+        ws = s.workStatus
+        if ws in (
+            WORK_STATUS_MOWING,
+            WORK_STATUS_RESUME,
+            WORK_STATUS_ZONE_PARTITION,
+            WORK_STATUS_ESCAPING,
+        ):
             return LawnMowerActivity.MOWING
-        if status in RETURNING_STATUSES:
-            return LawnMowerActivity.RETURNING
-        if status in DOCKED_STATUSES:
-            return LawnMowerActivity.DOCKED
-        if status in PAUSED_STATUSES:
+        if ws in (WORK_STATUS_PAUSE, WORK_STATUS_PAUSE_DOCKING):
             return LawnMowerActivity.PAUSED
-        if status in ERROR_STATUSES:
+        if ws == WORK_STATUS_DOCKING:
+            return LawnMowerActivity.RETURNING
+        if ws in (
+            WORK_STATUS_WAITING,
+            WORK_STATUS_CHARGING,
+            WORK_STATUS_CHARGING_FULL,
+            WORK_STATUS_NONE,
+        ):
+            return LawnMowerActivity.DOCKED
+        if ws in (WORK_STATUS_ERROR, WORK_STATUS_EMERGENCY_STOP):
             return LawnMowerActivity.ERROR
-        if status == WORK_STATUS_OFFLINE:
-            return LawnMowerActivity.ERROR
-        return LawnMowerActivity.ERROR
-
-    @property
-    def extra_state_attributes(self) -> dict:
-        d = self.coordinator.data or {}
-        attrs: dict = {}
-
-        # Active zones
-        if zone := d.get(F_CUT_ZONE_ID):
-            attrs["current_zone_id"] = zone
-        if zones := d.get(F_GO_ZONE_IDS) or d.get(F_CLEAN_ZONE_IDS):
-            attrs["queued_zone_ids"] = zones
-
-        # Session stats
-        if area := d.get(F_CLEAN_AREA):
-            attrs["session_area_m2"] = area
-        if total := d.get(F_MAP_AREA):
-            attrs["total_map_area_m2"] = total
-
-        # RTK GPS
-        if rtk := d.get(F_RTK_STATUS):
-            attrs["rtk_status"]       = RTK_STATUS_LABELS.get(rtk, rtk)
-            attrs["rtk_status_code"]  = rtk
-
-        # Errors
-        err = d.get(F_ERROR_CODE)
-        if err is not None and err != 0:
-            attrs["error_code"]    = err
-            attrs["error_message"] = error_label(err)
-        if errs := d.get(F_ERROR_CODES):
-            attrs["error_codes"] = errs
-
-        # Work status as human label (for automation use)
-        attrs["work_status_code"] = self.coordinator.work_status
-
-        return attrs
+        return LawnMowerActivity.DOCKED  # fallback for unexpected states
 
     async def async_start_mowing(self) -> None:
-        await self.coordinator.async_start_mow()
+        """Start mow OR resume from paused, depending on current state."""
+        s = self.coordinator.state_dict.get("robotInfo")
+        if s and s.workStatus in (WORK_STATUS_PAUSE, WORK_STATUS_PAUSE_DOCKING):
+            await self.coordinator.cmd_resume()
+        else:
+            await self.coordinator.cmd_start()
 
     async def async_pause(self) -> None:
-        await self.coordinator.async_pause()
+        await self.coordinator.cmd_pause()
 
     async def async_dock(self) -> None:
-        await self.coordinator.async_dock()
+        """Dock and KEEP task progress.
+
+        Use the lymow_mqtt.dock_cancel_task service for the destructive
+        variant that abandons the task.
+        """
+        await self.coordinator.cmd_dock_recharge()
