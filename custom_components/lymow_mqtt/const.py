@@ -1,6 +1,6 @@
 """Constants for the Lymow integration"""
 
-DOMAIN = "lymow"
+DOMAIN = "lymow_mqtt"
 MANUFACTURER = "Lymow"
 
 CONF_EMAIL    = "email"
@@ -307,3 +307,36 @@ F_SERIAL_NO  = "sn"            # str  robot serial number (inside fwVersion)
 
 RTSP_PORT = 10022
 RTSP_PATH = "h264ESVideoTest"
+
+
+# ─────────────────────────────────────────────
+# userCtrl command enum (arch.md §6a)
+# ─────────────────────────────────────────────
+USER_CTRL_NONE = 0
+USER_CTRL_CLEAN = 1                        # start mow
+USER_CTRL_DOCK = 2                         # dock + abandon task
+USER_CTRL_PAUSE = 3                        # pause from MOWING; also clear-error
+USER_CTRL_RESUME = 4                       # resume from PAUSE
+USER_CTRL_SELF_CHECKING = 16
+USER_CTRL_QUERY_MAP = 19
+USER_CTRL_QUERY_SCHEDULES = 20
+USER_CTRL_PAUSE_DOCK = 21                  # pause from DOCKING
+USER_CTRL_RESUME_DOCK = 22                 # resume from PAUSE_DOCKING
+USER_CTRL_FORCE_REINIT = 28                # cancel-task button; stops in place
+USER_CTRL_RECHARGE_DOCK = 33               # dock + keep task progress
+USER_CTRL_QUERY_RUN_TIME_CONFIG = 51
+USER_CTRL_QUERY_NET_DETAIL = 53            # not used in v1
+USER_CTRL_QUERY_RTK_L1 = 57                # not used in v1
+USER_CTRL_QUERY_RTK_L2 = 58                # not used in v1
+
+
+# work status values where the mower has an active task (arch.md §8b)
+ACTIVE_TASK_WORK_STATUSES = frozenset({2, 3, 4, 7, 8, 9, 10, 14})
+
+
+# ─────────────────────────────────────────────
+# Warning code labels (extend as discovered)
+# ─────────────────────────────────────────────
+WARNING_CODE_LABELS = {
+    4: "tip_over",
+}
