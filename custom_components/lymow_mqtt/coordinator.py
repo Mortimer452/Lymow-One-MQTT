@@ -121,6 +121,10 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def async_unload(self) -> None:
         if self._rest_poll_task:
             self._rest_poll_task.cancel()
+            try:
+                await self._rest_poll_task
+            except asyncio.CancelledError:
+                pass
         if self.mqtt:
             await self.mqtt.disconnect()
 
@@ -277,7 +281,7 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         The clear-before-await pattern ensures we never miss a set() that
         races our predicate check.
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         any_update = not expected
         # Snapshot whatever update marker is meaningful — for the "any update"
