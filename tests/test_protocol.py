@@ -103,3 +103,30 @@ class TestDecodePbOutput:
         # but if it's present, ByteSize() > 200 indicates real content
         if msg.btMap.ByteSize() > 0:
             assert "btMap" in protocol.populated_fields(msg)
+
+
+class TestZoneCatalogParser:
+    def test_parse_query_map_response_extracts_zones(self):
+        envelope = load_fixture("query_map_response.bin")
+        msg = protocol.decode_pboutput_envelope(envelope)
+        # Skip if this fixture didn't include the btMap blob
+        if msg.btMap.ByteSize() < 200:
+            pytest.skip("Fixture is state-echo only, no zone catalog")
+        catalog = protocol.parse_zone_catalog(msg.btMap)
+        # Should find at least one zone
+        assert len(catalog.zones) >= 1
+        # Each zone has a hashId
+        for z in catalog.zones:
+            assert z.hash_id
+            assert isinstance(z.name, str)
+            assert isinstance(z.mow_order, int)
+
+    def test_zones_by_hashid_lookup(self):
+        envelope = load_fixture("query_map_response.bin")
+        msg = protocol.decode_pboutput_envelope(envelope)
+        if msg.btMap.ByteSize() < 200:
+            pytest.skip("Fixture is state-echo only")
+        catalog = protocol.parse_zone_catalog(msg.btMap)
+        first_zone = catalog.zones[0]
+        looked_up = catalog.zones_by_hashid.get(first_zone.hash_id)
+        assert looked_up is first_zone
