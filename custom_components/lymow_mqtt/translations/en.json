@@ -2,78 +2,76 @@
   "config": {
     "step": {
       "user": {
-        "title": "Lymow Robot Mower",
-        "description": "Enter your Lymow app credentials",
-        "data": {
-          "email": "Email",
-          "password": "Password",
-          "region": "AWS Region (choose the one closest to you)"
-        }
+        "title": "Region",
+        "description": "Select the AWS region your Lymow account is registered with.",
+        "data": {"region": "Region"}
       },
-      "select_device": {
-        "title": "Select Robot",
-        "description": "Multiple robots found on this account",
-        "data": {
-          "thing_name": "Robot"
-        }
+      "auth_method": {
+        "title": "Sign-in method",
+        "description": "How did you create your Lymow account?",
+        "data": {"auth_method": "Sign-in method"}
+      },
+      "srp": {
+        "title": "Email and password",
+        "description": "Sign in with the email and password you use in the Lymow app.",
+        "data": {"email": "Email", "password": "Password"}
+      },
+      "oauth": {
+        "title": "Federated sign-in (Google or Apple)",
+        "description": "**1.** [Click here to sign in]({oauth_url}). After signing in, your browser will fail to redirect to `myapp://callback/...` — that's expected.\n\n**2.** Copy the URL from your browser's address bar (it should start with `myapp://callback/?code=...`) and paste it below.\n\n**3.** If your address bar is blank after the redirect, open browser DevTools (F12) → Network tab → find the row for `callback` → right-click → Copy URL.",
+        "data": {"oauth_code": "Pasted callback URL or code"}
+      },
+      "pick_device": {
+        "title": "Choose a mower",
+        "description": "Select which Lymow mower to add to Home Assistant.",
+        "data": {"thing_name": "Mower"}
       }
     },
     "error": {
-      "invalid_auth": "Invalid email or password",
-      "cannot_connect": "Cannot connect to Lymow servers",
-      "unknown": "Unexpected error — check the HA logs"
+      "auth_failed": "Sign-in failed. Check your email and password and try again.",
+      "oauth_failed": "Code exchange failed. The code may have expired — try the sign-in flow again.",
+      "no_code_found": "Could not extract an auth code from the input. Make sure you pasted the full callback URL."
     },
     "abort": {
-      "already_configured": "This robot is already configured",
-      "no_devices": "No robots found on this account"
+      "device_list_failed": "Could not retrieve device list — sign-in succeeded but the device-list API failed.",
+      "no_devices": "No mowers found on this account.",
+      "already_configured": "This mower is already added to Home Assistant."
     }
   },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Lymow Options",
-        "data": {
-          "scan_interval": "Poll interval (seconds, 10–300)"
-        }
-      }
-    }
-  },
-  "services": {
-    "start_zone": {
-      "name": "Start Zone",
-      "description": "Start mowing one or more specific zones",
-      "fields": {
-        "entry_id": {
-          "name": "Entry ID",
-          "description": "Config entry ID — optional if you only have one robot"
-        },
-        "zone_ids": {
-          "name": "Zone IDs",
-          "description": "List of zone hash IDs to mow (empty = all zones)"
-        }
-      }
+  "entity": {
+    "sensor": {
+      "battery": {"name": "Battery"},
+      "work_status": {"name": "Work status"},
+      "robot_status": {"name": "Robot status"},
+      "current_zone": {"name": "Current zone"},
+      "task_progress": {"name": "Task progress"},
+      "mow_time": {"name": "Mow time"},
+      "next_schedule": {"name": "Next schedule"},
+      "error_message": {"name": "Error message"},
+      "error_code": {"name": "Error code"},
+      "warning_code": {"name": "Warning code"},
+      "rtk_quality": {"name": "RTK quality"},
+      "horizontal_accuracy": {"name": "Horizontal accuracy"},
+      "wifi_signal": {"name": "WiFi signal"},
+      "lte_signal": {"name": "LTE signal"},
+      "firmware": {"name": "Firmware"},
+      "ip_address": {"name": "IP address"},
+      "zone_size": {"name": "Zone size"},
+      "total_mapped_area": {"name": "Total mapped area"},
+      "cut_speed": {"name": "Cut speed"},
+      "cut_height": {"name": "Cut height"},
+      "move_speed": {"name": "Move speed"},
+      "last_mow_duration": {"name": "Last mow duration"},
+      "last_mow_battery_used": {"name": "Last mow battery used"},
+      "last_mow_zones": {"name": "Last mow zones"},
+      "last_mow_end_type": {"name": "Last mow end type"}
     },
-    "set_blade_height": {
-      "name": "Set Blade Height",
-      "description": "Set the cutting blade height in mm",
-      "fields": {
-        "entry_id": {"name": "Entry ID", "description": "Config entry ID"},
-        "height_mm": {
-          "name": "Height (mm)",
-          "description": "Cutting height in millimeters — 20 to 60, step 5"
-        }
-      }
-    },
-    "set_schedule": {
-      "name": "Set Mowing Schedule",
-      "description": "Configure the weekly mowing schedule",
-      "fields": {
-        "entry_id": {"name": "Entry ID", "description": "Config entry ID"},
-        "schedules": {
-          "name": "Schedules",
-          "description": "List of schedule entries: [{day (0=Sun…6=Sat), startHour, startMin, duration (min)}]"
-        }
-      }
+    "binary_sensor": {
+      "online": {"name": "Online"},
+      "charging": {"name": "Charging"},
+      "recharging": {"name": "Recharging mid-task"},
+      "error_active": {"name": "Error"},
+      "emergency_stop": {"name": "Emergency stop"}
     }
   }
 }
