@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .const import ACTIVE_TASK_WORK_STATUSES
+
 
 def point_in_polygon(x: float, y: float, polygon: list[tuple[float, float]]) -> bool:
     """Ray-casting point-in-polygon test.
@@ -82,3 +84,45 @@ def merge_pboutput(state_dict: dict[str, Any], msg) -> None:
         state_dict["errorCodes"] = list(msg.errorCodes)
     if "warningCodes" in populated_names:
         state_dict["warningCodes"] = list(msg.warningCodes)
+
+
+def derive_current_zone(state_dict: dict[str, Any]) -> str | None:
+    """Derive 'which zone is the mower physically in right now'.
+
+    Returns:
+        Zone name if the mower is inside a zone polygon
+        Channel descriptor (e.g. "Pool → Front yard" or "→ dock") if in a corridor
+        None if idle, or in transit, or zone catalog unavailable
+
+    Per arch.md §12, this is what the official app does. Pose is in local
+    map frame matching the polygon coordinates (both are mower-local meters
+    relative to the dock origin).
+    """
+    pose = state_dict.get("pose")
+    catalog = state_dict.get("zone_catalog")  # populated by coordinator after parse_zone_catalog
+    robot_info = state_dict.get("robotInfo")
+    if not pose or not catalog or not robot_info:
+        return None
+
+    work_status = getattr(robot_info, "workStatus", 0)
+    if work_status not in ACTIVE_TASK_WORK_STATUSES:
+        return None
+
+    # Try go-zones first, ordered by mowOrder>0 (active task) then others
+    zones = sorted(catalog.zones, key=lambda z: (z.mow_order == 0, z.mow_order))
+    for zone in zones:
+        if zone.polygon_points and point_in_polygon(pose.x, pose.y, zone.polygon_points):
+            return zone.name
+
+    # Then channels — handle dock approach specially
+    for ch in catalog.channels:
+        if ch.polygon_points and point_in_polygon(pose.x, pose.y, ch.polygon_points):
+            if ch.is_docking_channel:
+                return "→ dock"
+            zone1_name = catalog.zones_by_hashid.get(ch.zone1)
+            zone2_name = catalog.zones_by_hashid.get(ch.zone2)
+            n1 = zone1_name.name if zone1_name else ch.zone1
+            n2 = zone2_name.name if zone2_name else ch.zone2
+            return f"{n1} → {n2}"
+
+    return None  # mower is somewhere between defined polygons (rare)
