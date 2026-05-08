@@ -10,6 +10,8 @@ from __future__ import annotations
 import base64
 import json
 import re
+import struct
+from dataclasses import dataclass, field
 
 from . import lymow_extracted_pb2 as pb
 
@@ -105,14 +107,16 @@ def populated_fields(msg: pb.PbOutput) -> list[str]:
 # pb2 module is an empty placeholder due to .proto declaration quirks.
 
 def _wire_varint(buf: bytes, pos: int) -> tuple[int, int]:
+    """Decode a protobuf varint. Capped at 10 bytes per the spec (64-bit max)."""
     r, s = 0, 0
-    while True:
+    for _ in range(10):
         b = buf[pos]
         pos += 1
         r |= (b & 0x7F) << s
         if not (b & 0x80):
             return r, pos
         s += 7
+    raise ValueError("varint exceeds 10 bytes")
 
 
 def _wire_parse(buf: bytes) -> dict:
@@ -173,8 +177,6 @@ def _parse_pbzone_basicinfo(buf: bytes) -> dict:
       8 mowOrder    int32
       9 mowOrderTextPos PbPoint
     """
-    import struct
-
     f = _wire_parse(buf)
     out: dict[str, object] = {
         "type": f.get(1, [(None, None)])[0][1] if 1 in f else None,
@@ -218,8 +220,6 @@ def _parse_pbzone_basicinfo(buf: bytes) -> dict:
 # ---------------------------------------------------------------------------
 # Zone catalog parser
 # ---------------------------------------------------------------------------
-
-from dataclasses import dataclass, field
 
 
 @dataclass
@@ -267,11 +267,8 @@ def parse_zone_catalog(bt_map) -> ZoneCatalog:
 
     Only the rich response shape produces a populated catalog.
     """
-    import re as _re
-    import struct
-
     catalog = ZoneCatalog()
-    HASHID_RE = _re.compile(r"^[A-Za-z0-9_]{4,16}$")
+    HASHID_RE = re.compile(r"^[A-Za-z0-9_]{4,16}$")
 
     btmap_bytes = bt_map.SerializeToString()
     btmap = _wire_parse(btmap_bytes)
@@ -405,8 +402,6 @@ def _decode_schedule_task(buf: bytes) -> dict:
         10 mowAngle    int32
         11 config      repeated PbScheduleConfig
     """
-    import struct
-
     f = _wire_parse(buf)
     out: dict = {
         "dayOfWeek": [],
