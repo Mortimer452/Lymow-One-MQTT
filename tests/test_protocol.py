@@ -130,3 +130,68 @@ class TestZoneCatalogParser:
         first_zone = catalog.zones[0]
         looked_up = catalog.zones_by_hashid.get(first_zone.hash_id)
         assert looked_up is first_zone
+
+
+class TestScheduleDecoder:
+    def test_decode_schedule_fixture(self):
+        envelope = load_fixture("schedule_response.bin")
+        msg = protocol.decode_pboutput_envelope(envelope)
+        if msg.schedule.ByteSize() == 0:
+            pytest.skip("Fixture has no schedule field")
+        schedules = protocol.decode_schedules(msg.schedule)
+        assert len(schedules) >= 1
+        s = schedules[0]
+        assert 0 <= s.hour <= 23
+        assert 0 <= s.minute <= 59
+        # Days are a list of ints 0-6
+        assert all(0 <= d <= 6 for d in s.days_of_week)
+
+    def test_negative_timezone_sign_extends_correctly(self):
+        """Per arch.md §5e, negative timeZone values come over the wire
+        as 10-byte int64 varints. -5 should decode as -5, not as a huge int.
+
+        PbSchedule's compiled pb2 is an empty placeholder, so we construct
+        the wire-format bytes directly and feed them into the walker via a
+        PbSchedules wrapper.
+        """
+        import lymow_extracted_pb2 as pb
+
+        # Hand-build a PbSchedule wire-format payload:
+        #   field 2 (hour) varint: tag=0x10, value=14
+        #   field 3 (minute) varint: tag=0x18, value=30
+        #   field 6 (id) varint: tag=0x30, value=12345 (=0xb9 0x60 -> varint 0xb9 0x60 = ...)
+        #   field 7 (timeZone) int32-as-int64 varint: -5 = 10-byte 0xfb...01
+        # Compose:
+        def _enc_varint(n: int) -> bytes:
+            out = bytearray()
+            v = n & ((1 << 64) - 1)
+            while True:
+                byte = v & 0x7F
+                v >>= 7
+                if v:
+                    out.append(byte | 0x80)
+                else:
+                    out.append(byte)
+                    return bytes(out)
+
+        # Build PbSchedule contents:
+        sched_payload = bytearray()
+        sched_payload += b"\x10" + _enc_varint(14)  # hour=14
+        sched_payload += b"\x18" + _enc_varint(30)  # minute=30
+        sched_payload += b"\x30" + _enc_varint(12345)  # id=12345
+        # timeZone (-5) as 10-byte 64-bit varint (sign-extended int64)
+        sched_payload += b"\x38" + _enc_varint((-5) & ((1 << 64) - 1))
+
+        # Wrap in PbSchedules: field 1 (tasks) is repeated PbSchedule, length-delimited
+        sub_len = _enc_varint(len(sched_payload))
+        outer = b"\x0a" + sub_len + bytes(sched_payload)
+
+        pb_schedules = pb.PbSchedules()
+        pb_schedules.ParseFromString(outer)
+        assert len(pb_schedules.tasks) == 1
+
+        schedules = protocol.decode_schedules(pb_schedules)
+        assert schedules[0].timezone_offset == -5
+        assert schedules[0].hour == 14
+        assert schedules[0].minute == 30
+        assert schedules[0].id == 12345

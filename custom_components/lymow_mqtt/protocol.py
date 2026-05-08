@@ -351,3 +351,166 @@ def parse_zone_catalog(bt_map) -> ZoneCatalog:
             continue
 
     return catalog
+
+
+# ---------------------------------------------------------------------------
+# Schedule decoder
+# ---------------------------------------------------------------------------
+
+_DAYS_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+
+
+@dataclass
+class ScheduleConfig:
+    """Per-zone runtime override inside a PbSchedule (PbScheduleConfig)."""
+
+    hash_id: str
+    cut_height: int | None
+    move_speed: float | None
+    clean_dir: int | None
+
+
+@dataclass
+class ScheduleInfo:
+    """Decoded weekly schedule entry (arch.md §5e)."""
+
+    id: int
+    days_of_week: list[int]  # 0=Sun, 1=Mon, ..., 6=Sat
+    hour: int
+    minute: int
+    is_repeated: bool
+    is_disabled: bool
+    is_angle_offset: bool
+    mow_angle: int
+    timezone_offset: int  # UTC hour offset (-12..+14)
+    zone_hash_ids: list[str]  # in mowOrder order
+    zones: list[dict] = field(default_factory=list)  # full zone basic-info dicts
+    config: list[ScheduleConfig] = field(default_factory=list)
+
+
+def _decode_schedule_task(buf: bytes) -> dict:
+    """Walk one PbSchedule's wire-format payload (harness.py:961).
+
+    Schema recovered from decompiled.js:397250-397528 + lymow_extracted.proto:
+        1 dayOfWeek    repeated enum (packed)
+        2 hour         int32
+        3 minute       int32
+        4 isRepeated   bool
+        5 zonesInfo    repeated PbZoneBasicInfo
+        6 id           uint32
+        7 timeZone     int32 (sign-extended as 10-byte int64 varint)
+        8 isDisabled   bool
+        9 isAngleOffset bool
+        10 mowAngle    int32
+        11 config      repeated PbScheduleConfig
+    """
+    import struct
+
+    f = _wire_parse(buf)
+    out: dict = {
+        "dayOfWeek": [],
+        "dayNames": [],
+        "hour": f.get(2, [(None, 0)])[0][1] if 2 in f else 0,
+        "minute": f.get(3, [(None, 0)])[0][1] if 3 in f else 0,
+        "isRepeated": bool(f.get(4, [(None, 0)])[0][1]) if 4 in f else False,
+        "id": f.get(6, [(None, 0)])[0][1] if 6 in f else 0,
+        "timeZone": 0,
+        "isDisabled": bool(f.get(8, [(None, 0)])[0][1]) if 8 in f else False,
+        "isAngleOffset": bool(f.get(9, [(None, 0)])[0][1]) if 9 in f else False,
+        "mowAngle": f.get(10, [(None, 0)])[0][1] if 10 in f else 0,
+        "zones": [],
+        "config": [],
+    }
+    # dayOfWeek (field 1) — packed-repeated enum varints inside a single LEN payload.
+    if 1 in f:
+        for tag, val in f[1]:
+            if tag != "L":
+                continue
+            day_buf = val
+            pos = 0
+            while pos < len(day_buf):
+                d, pos = _wire_varint(day_buf, pos)
+                out["dayOfWeek"].append(d)
+                if 0 <= d < 7:
+                    out["dayNames"].append(_DAYS_NAMES[d])
+    # timeZone (field 7) — int32 sign-extended over 10-byte int64 varint.
+    if 7 in f:
+        raw = f[7][0][1]
+        if raw > 0x7FFFFFFFFFFFFFFF:
+            raw -= 1 << 64
+        out["timeZone"] = raw
+    # zonesInfo (field 5) — repeated PbZoneBasicInfo.
+    if 5 in f:
+        for tag, val in f[5]:
+            if tag != "L":
+                continue
+            try:
+                out["zones"].append(_parse_pbzone_basicinfo(val))
+            except Exception:
+                pass
+    # config (field 11) — repeated PbScheduleConfig.
+    if 11 in f:
+        for tag, val in f[11]:
+            if tag != "L":
+                continue
+            try:
+                cfg = _wire_parse(val)
+                entry: dict = {
+                    "hashId": _wire_str(cfg[1][0][1]) if 1 in cfg else "",
+                    "cutHeight": cfg.get(2, [(None, None)])[0][1] if 2 in cfg else None,
+                    "moveSpeed": None,
+                    "cleanDir": cfg.get(4, [(None, None)])[0][1] if 4 in cfg else None,
+                }
+                if 3 in cfg:
+                    entry["moveSpeed"] = struct.unpack("<f", cfg[3][0][1])[0]
+                out["config"].append(entry)
+            except Exception:
+                pass
+    return out
+
+
+def decode_schedules(pb_schedules) -> list[ScheduleInfo]:
+    """Decode PbSchedules into a list of ScheduleInfo.
+
+    The compiled pb2 module's PbSchedule is an empty placeholder (the .proto
+    field declarations don't survive proto2 compilation), so this walks each
+    task's serialized bytes via the wire-format walker. Per the corrections
+    note: PbSchedules has a single `tasks` field (repeated PbSchedule), not
+    `schedules`.
+    """
+    out: list[ScheduleInfo] = []
+    for task in pb_schedules.tasks:
+        decoded = _decode_schedule_task(task.SerializeToString())
+        # Order zone_hash_ids by mowOrder, falling back to insertion order.
+        zones = decoded.get("zones") or []
+        ordered_zones = sorted(
+            (z for z in zones if z.get("hashId")),
+            key=lambda z: int(z.get("mowOrder") or 0),
+        )
+        zone_hash_ids = [z["hashId"] for z in ordered_zones]
+        configs = [
+            ScheduleConfig(
+                hash_id=c.get("hashId") or "",
+                cut_height=c.get("cutHeight"),
+                move_speed=c.get("moveSpeed"),
+                clean_dir=c.get("cleanDir"),
+            )
+            for c in (decoded.get("config") or [])
+        ]
+        out.append(
+            ScheduleInfo(
+                id=int(decoded.get("id") or 0),
+                days_of_week=list(decoded.get("dayOfWeek") or []),
+                hour=int(decoded.get("hour") or 0),
+                minute=int(decoded.get("minute") or 0),
+                is_repeated=bool(decoded.get("isRepeated")),
+                is_disabled=bool(decoded.get("isDisabled")),
+                is_angle_offset=bool(decoded.get("isAngleOffset")),
+                mow_angle=int(decoded.get("mowAngle") or 0),
+                timezone_offset=int(decoded.get("timeZone") or 0),
+                zone_hash_ids=zone_hash_ids,
+                zones=zones,
+                config=configs,
+            )
+        )
+    return out
