@@ -99,10 +99,9 @@ class TestDecodePbOutput:
     def test_query_map_response_has_btmap(self):
         envelope = load_fixture("query_map_response.bin")
         msg = protocol.decode_pboutput_envelope(envelope)
-        # btMap may be present (catalog reply) or absent (state-echo only)
-        # but if it's present, ByteSize() > 200 indicates real content
-        if msg.btMap.ByteSize() > 0:
-            assert "btMap" in protocol.populated_fields(msg)
+        if msg.btMap.ByteSize() == 0:
+            pytest.skip("Fixture is state-echo only, no btMap to check")
+        assert "btMap" in protocol.populated_fields(msg)
 
 
 class TestZoneCatalogParser:
