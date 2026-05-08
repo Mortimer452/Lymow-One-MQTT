@@ -43,8 +43,11 @@ class MqttClient:
         auth: CognitoAuth,
         on_pboutput: Callable[[bytes], None],
         on_notify_app: Callable[[dict], None],
-        on_disconnect_async: Callable[[], None] | None = None,
+        on_disconnect_async: Callable[[], Any] | None = None,
     ) -> None:
+        """on_disconnect_async may be either a sync callable or an async coroutine
+        function — both forms are supported via asyncio.ensure_future.
+        """
         self._thing_name = thing_name
         self._host = host
         self._region = region
@@ -87,6 +90,7 @@ class MqttClient:
         cli.ws_set_options(path=ws_path, headers={"Host": self._host})
 
         cli.on_connect = self._on_connect
+        cli.on_subscribe = self._on_subscribe
         cli.on_disconnect = self._on_disconnect
         cli.on_message = self._on_message
 
@@ -96,21 +100,29 @@ class MqttClient:
 
         self._client = cli
 
-        # Wait for on_connect to fire (with subscribe completion)
+        # Wait until BOTH connect AND subscribe have ACK'd (set in _on_subscribe)
         try:
             await asyncio.wait_for(self._connected.wait(), timeout=15.0)
         except asyncio.TimeoutError:
             cli.loop_stop()
             cli.disconnect()
-            raise ConnectionError("MQTT connect timed out")
+            raise ConnectionError("MQTT connect/subscribe timed out")
 
-    def disconnect(self) -> None:
-        """Stop the loop and close the connection."""
-        if self._client:
-            self._client.loop_stop()
-            self._client.disconnect()
-            self._client = None
+    async def disconnect(self) -> None:
+        """Stop the loop and close the connection.
+
+        Async because paho's loop_stop() blocks until the network thread
+        joins, which can take seconds. Run in an executor so HA's event
+        loop isn't stalled during integration unload.
+        """
+        cli = self._client
+        self._client = None
         self._connected.clear()
+        if cli is None:
+            return
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, cli.loop_stop)
+        cli.disconnect()
 
     def publish_pbinput(self, raw_pbinput: bytes) -> bool:
         """Publish a raw PbInput payload. Returns True on publish-ack success.
@@ -131,13 +143,23 @@ class MqttClient:
     def _on_connect(self, client, userdata, flags, rc, properties=None):
         _LOGGER.debug("MQTT connected rc=%s", rc)
         if rc != 0:
+            _LOGGER.warning("MQTT connect rejected rc=%s", rc)
             return
         topics = [
             (_TOPIC_PBOUTPUT.format(thing_name=self._thing_name), 1),
             (_TOPIC_NOTIFY_APP.format(thing_name=self._thing_name), 1),
         ]
         client.subscribe(topics)
-        # Signal the asyncio waiter
+        # Don't signal connected yet — wait for SUBACK in _on_subscribe.
+
+    def _on_subscribe(self, client, userdata, mid, granted_qos, properties=None):
+        # paho V2 callback shape — granted_qos is a list of ReasonCode objects.
+        # ReasonCode 0..2 = success at QoS 0/1/2; 0x80+ = failure.
+        rejected = [int(rc) for rc in granted_qos if int(rc) >= 0x80]
+        if rejected:
+            _LOGGER.error("MQTT subscribe rejected: %s", rejected)
+            return  # Don't set _connected — caller's wait_for will time out
+        _LOGGER.debug("MQTT subscribed mid=%s qos=%s", mid, list(granted_qos))
         if self._loop:
             self._loop.call_soon_threadsafe(self._connected.set)
 
@@ -147,7 +169,20 @@ class MqttClient:
         if self._loop:
             self._loop.call_soon_threadsafe(self._connected.clear)
         if self._on_disconnect_async and self._loop:
-            self._loop.call_soon_threadsafe(self._on_disconnect_async)
+            self._loop.call_soon_threadsafe(self._dispatch_disconnect_async)
+
+    def _dispatch_disconnect_async(self):
+        """Run on the asyncio loop. Schedule async callback as a task; sync ones run inline."""
+        cb = self._on_disconnect_async
+        if cb is None:
+            return
+        try:
+            result = cb()
+        except Exception:
+            _LOGGER.exception("Error in on_disconnect_async callback")
+            return
+        if asyncio.iscoroutine(result):
+            asyncio.ensure_future(result)
 
     def _on_message(self, client, userdata, msg):
         topic = msg.topic
