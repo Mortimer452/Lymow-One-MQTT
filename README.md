@@ -59,7 +59,7 @@ The standard `Dock` action on the lawn_mower entity sends `RECHARGE_DOCK`, which
 ## Caveats
 
 - **Federated sign-in requires a manual paste step** every config flow / reauth. We tried to find a redirect URI that would let us auto-capture the code — Cognito only accepts `myapp://callback/` for this client, so manual paste is unavoidable.
-- The integration is **strict-passive** by design: ~30-90s state update cadence during mowing, ~15min during charging. No real-time tracking. If you want sub-second updates, a future version may add an opt-in switch.
+- The integration is **strictly-passive** by design, just listens to messages sent by the mower. Message updates (battery level, percent complete, etc) update roughly every 30-60 seconds during mower, much slower during charges (10-20 minutes)
 - The integration is independent from the upstream `d3dfantasy99/Lymow-HA` integration. **Uninstall that one first** before installing this — they share entity naming patterns at the device-registry level.
 
 ## Support

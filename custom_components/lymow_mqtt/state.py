@@ -157,10 +157,15 @@ def _has_field(msg, name: str) -> bool:
 def active_cut_config(state_dict: dict[str, Any]) -> dict[str, Any]:
     """Walk schedule_config -> zone_config -> runtime_config and return active cut params.
 
-    Per arch.md §6c: cut height/speed values cascade from per-task schedule
-    overrides down to the global runtime config. Move speed only ever comes
-    from the per-zone or schedule-override tiers; PbRobotConfig has no
-    global moveSpeed field.
+    Per arch.md §6c, cut height/speed/move speed cascade from per-task
+    schedule overrides → per-zone PbZoneConfig → global PbRunTimeConfig.
+
+    Note on PbRunTimeConfig vs PbRobotConfig: the global "runtime config"
+    that carries cutHeight, cutSpeed, AND moveSpeed is `PbRunTimeConfig`,
+    nested at `PbMap.runTimeConfig` (delivered inside QUERY_MAP responses).
+    `PbRobotConfig` is a different type (rcCutHeight, rcCutSpeed, no
+    moveSpeed) used elsewhere. The zone catalog parser extracts PbRunTimeConfig
+    onto `ZoneCatalog.runtime_config`; that is what we read here.
 
     Returns dict with keys: cut_speed (int 3-6 or None), cut_height (int mm),
     move_speed (float m/s or None).
@@ -192,14 +197,16 @@ def active_cut_config(state_dict: dict[str, Any]) -> dict[str, Any]:
             if result["move_speed"] is None and _has_field(zc, "moveSpeed"):
                 result["move_speed"] = zc.moveSpeed
 
-    # Tier 3: global runtime config (PbRobotConfig — note rc-prefixed fields,
-    # and there is no moveSpeed at this tier)
-    rc = state_dict.get("runtime_config")
-    if rc is not None:
-        if result["cut_speed"] is None and _has_field(rc, "rcCutSpeed"):
-            result["cut_speed"] = rc.rcCutSpeed
-        if result["cut_height"] is None and _has_field(rc, "rcCutHeight"):
-            result["cut_height"] = rc.rcCutHeight
+    # Tier 3: global PbRunTimeConfig (carried on ZoneCatalog from QUERY_MAP)
+    catalog = state_dict.get("zone_catalog")
+    rtc = getattr(catalog, "runtime_config", None) if catalog is not None else None
+    if rtc is not None:
+        if result["cut_speed"] is None and _has_field(rtc, "cutSpeed"):
+            result["cut_speed"] = rtc.cutSpeed
+        if result["cut_height"] is None and _has_field(rtc, "cutHeight"):
+            result["cut_height"] = rtc.cutHeight
+        if result["move_speed"] is None and _has_field(rtc, "moveSpeed"):
+            result["move_speed"] = rtc.moveSpeed
 
     return result
 

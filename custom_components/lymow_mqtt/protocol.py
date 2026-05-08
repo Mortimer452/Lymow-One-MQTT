@@ -253,6 +253,12 @@ class ZoneCatalog:
     zones: list[ZoneInfo] = field(default_factory=list)
     channels: list[ChannelInfo] = field(default_factory=list)
     zones_by_hashid: dict[str, ZoneInfo] = field(default_factory=dict)
+    # PbRunTimeConfig from PbMap.runTimeConfig (field 13). Carries cutHeight,
+    # cutSpeed, moveSpeed for the global runtime tier of active_cut_config.
+    # Different from PbRobotConfig (which has rcCutHeight/rcCutSpeed but no
+    # moveSpeed) — the harness reads from this field at parse_btmap_payload
+    # (harness.py:1064-1079).
+    runtime_config: object | None = None
 
 
 def parse_zone_catalog(bt_map) -> ZoneCatalog:
@@ -361,6 +367,18 @@ def parse_zone_catalog(bt_map) -> ZoneCatalog:
             )
         except Exception:
             continue
+
+    # Inner.field_13: PbRunTimeConfig — global cutHeight/cutSpeed/moveSpeed.
+    # Distinct from PbRobotConfig; this is the source the harness reads for
+    # the "Runtime Config" panel (harness.py:1064-1079, arch.md §6 - cut config).
+    if 13 in inner:
+        try:
+            rtc_bytes = inner[13][0][1]
+            rtc = pb.PbRunTimeConfig()
+            rtc.ParseFromString(rtc_bytes)
+            catalog.runtime_config = rtc
+        except Exception:
+            catalog.runtime_config = None
 
     return catalog
 

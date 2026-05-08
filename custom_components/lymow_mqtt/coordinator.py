@@ -28,7 +28,6 @@ from .const import (
     USER_CTRL_DOCK,
     USER_CTRL_FORCE_REINIT,
     USER_CTRL_QUERY_MAP,
-    USER_CTRL_QUERY_RUN_TIME_CONFIG,
     USER_CTRL_QUERY_SCHEDULES,
     USER_CTRL_RECHARGE_DOCK,
     WORK_STATUS_ERROR,
@@ -110,10 +109,15 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         await self.mqtt.connect()
 
-        # Fire startup queries — fire-and-forget, responses arrive on /pboutput
+        # Fire startup queries — fire-and-forget, responses arrive on /pboutput.
+        # QUERY_MAP gives us the zone catalog AND PbRunTimeConfig in one shot
+        # (the latter for cut_height/move_speed/cut_speed sensors via
+        # state.active_cut_config). QUERY_SCHEDULES gives the schedule list.
+        # We previously also fired QUERY_RUN_TIME_CONFIG (51) but that returns
+        # a PbRobotConfig (rcCutHeight/rcCutSpeed, no moveSpeed) which isn't
+        # the source we need; dropped to keep startup quiet.
         await self._publish_userctrl(USER_CTRL_QUERY_MAP, with_query_map_flag=True)
         await self._publish_userctrl(USER_CTRL_QUERY_SCHEDULES)
-        await self._publish_userctrl(USER_CTRL_QUERY_RUN_TIME_CONFIG)
 
         # Kick off the REST poll task
         self._rest_poll_task = self.hass.async_create_task(self._rest_poll_loop())
@@ -182,9 +186,11 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             except Exception:
                 _LOGGER.exception("Failed to decode schedules")
 
-        # Cache runtime config when a robotConfig arrives (post-completion bursts, query-51 responses)
-        if msg.robotConfig.ByteSize() > 0:
-            self._state["runtime_config"] = msg.robotConfig
+        # PbRobotConfig (msg.robotConfig) is a different message than PbRunTimeConfig
+        # (the source state.active_cut_config wants). The cut/move config comes from
+        # QUERY_MAP responses via state["zone_catalog"].runtime_config. We don't need
+        # to cache PbRobotConfig as "runtime_config" — leaving the merged
+        # state["robotConfig"] in place for any future consumers (rrConfig etc.).
 
         # cleanReport handling (arch.md §7d, spec §5.2)
         if msg.cleanReport.ByteSize() > 0:
