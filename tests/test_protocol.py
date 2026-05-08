@@ -40,3 +40,39 @@ class TestEncodeUserCtrl:
         """USER_CTRL_RECHARGE_DOCK = 33 produces a 4-byte protobuf."""
         raw = protocol.encode_userctrl(33)
         assert raw == bytes([0x10, 0x28, 0x28, 0x21])  # 33 = 0x21
+
+
+class TestEncodeQueryMap:
+    def test_query_map_includes_btmap_query_flag(self):
+        raw = protocol.encode_query_map()
+        # Decode it back to verify
+        import lymow_extracted_pb2 as pb
+        msg = pb.PbInput()
+        msg.ParseFromString(raw)
+        assert msg.userCtrl == 19
+        assert msg.version == 40
+        assert msg.btMap.queryMap is True
+
+
+class TestEncodeStartZones:
+    def test_start_zones_two_zones_in_order(self):
+        raw = protocol.encode_start_zones(["aaaa1111", "bbbb2222"])
+        import lymow_extracted_pb2 as pb
+        msg = pb.PbInput()
+        msg.ParseFromString(raw)
+        assert msg.userCtrl == 1
+        assert msg.version == 40
+        assert len(msg.map.goZones) == 2
+        assert msg.map.goZones[0].basicInfo.hashId == "aaaa1111"
+        assert msg.map.goZones[0].basicInfo.mowOrder == 1
+        assert msg.map.goZones[1].basicInfo.hashId == "bbbb2222"
+        assert msg.map.goZones[1].basicInfo.mowOrder == 2
+
+    def test_start_zones_empty_list_is_default_rotation(self):
+        raw = protocol.encode_start_zones([])
+        import lymow_extracted_pb2 as pb
+        msg = pb.PbInput()
+        msg.ParseFromString(raw)
+        assert msg.userCtrl == 1
+        assert msg.version == 40
+        assert len(msg.map.goZones) == 0

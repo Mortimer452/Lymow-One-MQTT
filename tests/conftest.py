@@ -11,6 +11,9 @@ from pathlib import Path
 # Allow tests to import the integration as a package.
 _REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "custom_components"))
+# Also expose the package directory so `import lymow_extracted_pb2` works
+# in tests (matching how the harness imports it).
+sys.path.insert(0, str(_REPO_ROOT / "custom_components" / "lymow_mqtt"))
 
 # The integration's __init__.py imports homeassistant and voluptuous, which
 # aren't available in the unit-test environment. Inject a stub package object

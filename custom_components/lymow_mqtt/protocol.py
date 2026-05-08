@@ -36,3 +36,33 @@ def encode_userctrl(user_ctrl: int) -> bytes:
     pb_in.userCtrl = user_ctrl
     pb_in.version = PB_VERSION_4_9
     return pb_in.SerializeToString()
+
+
+def encode_query_map() -> bytes:
+    """Encode PbInput for USER_CTRL_QUERY_MAP (19) with btMap.queryMap=true.
+
+    Without the btMap flag the mower returns nothing meaningful (arch.md §6d).
+    Response is a full state echo plus zone-catalog blob (arch.md §8b).
+    """
+    pb_in = pb.PbInput()
+    pb_in.userCtrl = 19
+    pb_in.version = PB_VERSION_4_9
+    pb_in.btMap.queryMap = True
+    return pb_in.SerializeToString()
+
+
+def encode_start_zones(zone_hash_ids: list[str]) -> bytes:
+    """Encode PbInput for USER_CTRL_CLEAN (1) with optional goZones list.
+
+    With an empty list, the firmware uses the default rotation (last-used
+    zones from the device's catalog). With a populated list, each zone is
+    given a sequential mowOrder (1, 2, ..., N) per arch.md §6d.
+    """
+    pb_in = pb.PbInput()
+    pb_in.userCtrl = 1
+    pb_in.version = PB_VERSION_4_9
+    for i, hash_id in enumerate(zone_hash_ids, start=1):
+        zone = pb_in.map.goZones.add()
+        zone.basicInfo.hashId = hash_id
+        zone.basicInfo.mowOrder = i
+    return pb_in.SerializeToString()
