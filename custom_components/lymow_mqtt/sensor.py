@@ -1,9 +1,16 @@
-"""Lymow sensor platform."""
+"""Lymow sensor entities. Primary + diagnostic sensors share this file.
 
+Per spec §4, sensors expose raw enum ints for work_status / robot_status
+(no friendly-label mapping). Numeric sensors use HA's built-in unit
+conversion via device_class + native_unit_of_measurement +
+suggested_unit_of_measurement + suggested_display_precision.
+"""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Callable
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -12,281 +19,469 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfArea, UnitOfLength, UnitOfTime
+from homeassistant.const import (
+    PERCENTAGE,
+    EntityCategory,
+    UnitOfArea,
+    UnitOfLength,
+    UnitOfSpeed,
+    UnitOfTime,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import (
-    CLEAN_MODE_ADAPTIVE_ZIGZAG,
-    CLEAN_MODE_CHESS_BOARD,
-    CLEAN_MODE_PERIMETER_ONLY,
-    CLEAN_MODE_ZIGZAG,
-    DOMAIN,
-    F_BATTERY,
-    F_CLEAN_AREA,
-    F_CLEAN_MODE,
-    F_CUT_HEIGHT,
-    F_CUTTING_HEIGHT,
-    F_FW_VERSION,
-    F_LTE_SIGNAL,
-    F_MCU_VERSION,
-    F_NET_DETAIL,
-    F_RTK_STATUS,
-    F_WIFI_SIGNAL,
-    NET_SIM_SIGNAL,
-    NET_WIFI_SIGNAL,
-    RTK_STATUS_LABELS,
-    WORK_STATUS_OFFLINE,
-    error_label,
-    F_ERROR_CODE,
-)
+from . import state as state_mod
+from .const import DOMAIN, WARNING_CODE_LABELS, error_label
 from .coordinator import LymowCoordinator
 from .entity_base import LymowEntity
-
-# Human-readable labels for cleanMode string values
-CLEAN_MODE_LABELS: dict[str, str] = {
-    CLEAN_MODE_ZIGZAG:          "Zigzag",
-    CLEAN_MODE_CHESS_BOARD:     "Chess Board",
-    CLEAN_MODE_PERIMETER_ONLY:  "Perimeter Only",
-    CLEAN_MODE_ADAPTIVE_ZIGZAG: "Adaptive Zigzag",
-}
-
-# Human-readable work status labels (integer → string)
-WORK_STATUS_LABELS: dict[int, str] = {
-    -1: "Offline",
-    0:  "Idle",
-    1:  "Waiting",
-    2:  "Mowing",
-    3:  "Paused",
-    4:  "Docking",
-    5:  "Charging",
-    6:  "Remote Control",
-    7:  "Error",
-    8:  "Resuming",
-    9:  "Zone Partitioning",
-    10: "Pause Docking",
-    11: "Updating",
-    12: "Fully Charged",
-    13: "Emergency Stop",
-    14: "Escaping",
-    15: "RTT Test",
-}
 
 
 @dataclass(frozen=True, kw_only=True)
 class LymowSensorDesc(SensorEntityDescription):
-    # How to get the raw value from coordinator.data
-    # Can be a simple key string or a callable(data: dict) -> Any
-    value_source: str | Callable[[dict], Any] = ""
-    # Optional transform applied to the raw value before storing
-    transform: Callable[[Any], Any] | None = None
+    """Sensor descriptor with a value-extraction callable."""
+
+    value_fn: Callable[[dict[str, Any]], Any] = lambda s: None
 
 
-def _net(key: str) -> Callable[[dict], Any]:
-    """Helper: extract a key from the nested netDetailInfo dict."""
-    return lambda d: (d.get(F_NET_DETAIL) or {}).get(key)
+# ─────────────────────────────────────────────
+# Value extractors
+# ─────────────────────────────────────────────
+
+def _battery(s):
+    ri = s.get("robotInfo")
+    return ri.battery if ri else None
 
 
-SENSORS: tuple[LymowSensorDesc, ...] = (
-    # ── Status ──────────────────────────────────────────────────────────
-    LymowSensorDesc(
-        key="work_status",
-        name="Status",
-        icon="mdi:robot-mower",
-        value_source="workStatus",
-        transform=lambda v: WORK_STATUS_LABELS.get(v, f"Unknown ({v})"),
-    ),
-    LymowSensorDesc(
-        key="error",
-        name="Error",
-        icon="mdi:alert-circle-outline",
-        value_source=F_ERROR_CODE,
-        transform=lambda v: error_label(v) if v else "None",
-        entity_registry_enabled_default=False,
-    ),
+def _work_status(s):
+    ri = s.get("robotInfo")
+    return ri.workStatus if ri else None
 
-    # ── Battery ─────────────────────────────────────────────────────────
+
+def _robot_status(s):
+    ri = s.get("robotInfo")
+    return ri.robotStatus if ri else None
+
+
+def _current_zone(s):
+    return state_mod.derive_current_zone(s)
+
+
+def _task_progress(s):
+    ci = s.get("cleanInfo")
+    if ci is None or not ci.HasField("cleanPercent"):
+        return None
+    return ci.cleanPercent * 100
+
+
+def _mow_time(s):
+    ci = s.get("cleanInfo")
+    return ci.cleanTime if ci and ci.HasField("cleanTime") else None
+
+
+def _next_schedule(s):
+    """Compute datetime of next upcoming scheduled run."""
+    schedules = s.get("schedules") or []
+    if not schedules:
+        return None
+    now = datetime.now(UTC)
+    candidates = []
+    for sch in schedules:
+        if sch.is_disabled:
+            continue
+        for day in sch.days_of_week:
+            # day: 0=Sun, 6=Sat (per arch.md §5e)
+            # Python weekday: 0=Mon, 6=Sun -> shift
+            python_day = (day + 6) % 7
+            days_ahead = (python_day - now.weekday()) % 7
+            run_dt = now.replace(
+                hour=sch.hour, minute=sch.minute, second=0, microsecond=0
+            )
+            if days_ahead == 0 and run_dt <= now:
+                days_ahead = 7
+            run_dt = run_dt + timedelta(days=days_ahead)
+            candidates.append(run_dt)
+    return min(candidates) if candidates else None
+
+
+def _error_message(s):
+    codes = s.get("errorCodes") or []
+    if not codes:
+        return "OK"
+    return error_label(codes[0])
+
+
+def _error_code(s):
+    codes = s.get("errorCodes") or []
+    return codes[0] if codes else 0
+
+
+def _warning_code(s):
+    codes = s.get("warningCodes") or []
+    return codes[0] if codes else 0
+
+
+def _rtk_quality(s):
+    li = s.get("localizationInfo")
+    if li is None or not li.HasField("positionQuality"):
+        return None
+    pq = li.positionQuality
+    if pq == 1:
+        return "Float fix"
+    if pq == 3:
+        return "Fixed cm"
+    return f"unknown ({pq})"
+
+
+def _horizontal_accuracy(s):
+    li = s.get("localizationInfo")
+    return (
+        li.horizontalAccuracy
+        if li and li.HasField("horizontalAccuracy")
+        else None
+    )
+
+
+def _wifi_signal(s):
+    ri = s.get("robotInfo")
+    return ri.wifiSignalQuality if ri else None
+
+
+def _lte_signal(s):
+    ri = s.get("robotInfo")
+    return ri.lteSignalQuality if ri else None
+
+
+def _firmware(s):
+    di = s.get("deviceInfo")
+    return (
+        di.softwareVersion if di and di.HasField("softwareVersion") else None
+    )
+
+
+def _ip_address(s):
+    di = s.get("deviceInfo")
+    if di and di.HasField("ipAddress") and di.ipAddress:
+        return di.ipAddress
+    return s.get("rest_ip_address")
+
+
+def _zone_size(s):
+    ci = s.get("cleanInfo")
+    return ci.cleanArea if ci and ci.HasField("cleanArea") else None
+
+
+def _total_mapped_area(s):
+    ci = s.get("cleanInfo")
+    return ci.mapArea if ci and ci.HasField("mapArea") else None
+
+
+def _last_mow_duration(s):
+    cr = s.get("last_clean_report")
+    if not cr:
+        return None
+    ci = cr.cleanInfo
+    return ci.cleanTime if ci.HasField("cleanTime") else None
+
+
+def _last_mow_battery_used(s):
+    cr = s.get("last_clean_report")
+    return cr.usedBattery if cr and cr.HasField("usedBattery") else None
+
+
+def _last_mow_zones(s):
+    cr = s.get("last_clean_report")
+    if not cr:
+        return None
+    zone_ids = list(cr.cleanInfo.areaInfo.cleanZoneIds)
+    if not zone_ids:
+        return None
+    catalog = s.get("zone_catalog")
+    if not catalog:
+        return ", ".join(zone_ids)
+    names = [
+        catalog.zones_by_hashid[h].name
+        if h in catalog.zones_by_hashid
+        else h
+        for h in zone_ids
+    ]
+    return ", ".join(names)
+
+
+def _last_mow_end_type(s):
+    cr = s.get("last_clean_report")
+    if not cr or not cr.HasField("mowEndType"):
+        return None
+    return {1: "Normal", 2: "Cancel"}.get(
+        cr.mowEndType, f"Unknown ({cr.mowEndType})"
+    )
+
+
+def _cut_speed(s):
+    cfg = state_mod.active_cut_config(s)
+    cs = cfg["cut_speed"]
+    return {3: "Eco", 4: "Standard", 5: "Power", 6: "Turbo"}.get(cs)
+
+
+def _cut_height(s):
+    return state_mod.active_cut_config(s)["cut_height"]
+
+
+def _move_speed(s):
+    return state_mod.active_cut_config(s)["move_speed"]
+
+
+# ─────────────────────────────────────────────
+# Descriptors — primary
+# ─────────────────────────────────────────────
+
+PRIMARY_SENSORS: tuple[LymowSensorDesc, ...] = (
     LymowSensorDesc(
         key="battery",
-        name="Battery",
-        native_unit_of_measurement=PERCENTAGE,
+        translation_key="battery",
         device_class=SensorDeviceClass.BATTERY,
         state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:battery",
-        value_source=F_BATTERY,
-    ),
-
-    # ── Mowing ──────────────────────────────────────────────────────────
-    LymowSensorDesc(
-        key="clean_mode",
-        name="Mow Mode",
-        icon="mdi:grass",
-        value_source=F_CLEAN_MODE,
-        transform=lambda v: CLEAN_MODE_LABELS.get(v, v),
+        native_unit_of_measurement=PERCENTAGE,
+        value_fn=_battery,
     ),
     LymowSensorDesc(
-        key="blade_height",
-        name="Blade Height",
+        key="work_status",
+        translation_key="work_status",
+        value_fn=_work_status,
+    ),
+    LymowSensorDesc(
+        key="current_zone",
+        translation_key="current_zone",
+        icon="mdi:map-marker",
+        value_fn=_current_zone,
+    ),
+    LymowSensorDesc(
+        key="task_progress",
+        translation_key="task_progress",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=PERCENTAGE,
+        suggested_display_precision=0,
+        value_fn=_task_progress,
+    ),
+    LymowSensorDesc(
+        key="mow_time",
+        translation_key="mow_time",
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        value_fn=_mow_time,
+    ),
+    LymowSensorDesc(
+        key="next_schedule",
+        translation_key="next_schedule",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=_next_schedule,
+    ),
+    LymowSensorDesc(
+        key="error_message",
+        translation_key="error_message",
+        icon="mdi:alert-circle-outline",
+        value_fn=_error_message,
+    ),
+    LymowSensorDesc(
+        key="cut_speed",
+        translation_key="cut_speed",
+        icon="mdi:fan",
+        value_fn=_cut_speed,
+    ),
+    LymowSensorDesc(
+        key="cut_height",
+        translation_key="cut_height",
+        device_class=SensorDeviceClass.DISTANCE,
+        state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfLength.MILLIMETERS,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:scissors-cutting",
-        # cuttingHeight preferred (cloud shadow), fallback to cutHeight (BLE shadow)
-        value_source=lambda d: d.get(F_CUTTING_HEIGHT) or d.get(F_CUT_HEIGHT),
+        suggested_display_precision=1,
+        value_fn=_cut_height,
     ),
     LymowSensorDesc(
-        key="session_area",
-        name="Session Mowed Area",
-        native_unit_of_measurement=UnitOfArea.SQUARE_METERS,
+        key="move_speed",
+        translation_key="move_speed",
+        device_class=SensorDeviceClass.SPEED,
         state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:map-check",
-        value_source=F_CLEAN_AREA,
+        native_unit_of_measurement=UnitOfSpeed.METERS_PER_SECOND,
+        suggested_unit_of_measurement=UnitOfSpeed.FEET_PER_SECOND,
+        suggested_display_precision=1,
+        value_fn=_move_speed,
     ),
+    LymowSensorDesc(
+        key="last_mow_duration",
+        translation_key="last_mow_duration",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        value_fn=_last_mow_duration,
+    ),
+)
 
-    # ── GPS / RTK ────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# Descriptors — diagnostic
+# ─────────────────────────────────────────────
+
+DIAGNOSTIC_SENSORS: tuple[LymowSensorDesc, ...] = (
     LymowSensorDesc(
-        key="rtk_status",
-        name="RTK GPS",
-        icon="mdi:satellite-uplink",
-        value_source=F_RTK_STATUS,
-        transform=lambda v: RTK_STATUS_LABELS.get(v, f"Unknown ({v})"),
+        key="robot_status",
+        translation_key="robot_status",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=_robot_status,
     ),
     LymowSensorDesc(
-        key="rtk_precision",
-        name="RTK Precision",
+        key="error_code",
+        translation_key="error_code",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=_error_code,
+    ),
+    LymowSensorDesc(
+        key="warning_code",
+        translation_key="warning_code",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=_warning_code,
+    ),
+    LymowSensorDesc(
+        key="rtk_quality",
+        translation_key="rtk_quality",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=_rtk_quality,
+    ),
+    LymowSensorDesc(
+        key="horizontal_accuracy",
+        translation_key="horizontal_accuracy",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        device_class=SensorDeviceClass.DISTANCE,
+        state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfLength.METERS,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:crosshairs-gps",
-        value_source=lambda d: (d.get("rtkDiagnosticL1") or {}).get("precision"),
-        entity_registry_enabled_default=False,
+        suggested_unit_of_measurement=UnitOfLength.INCHES,
+        suggested_display_precision=2,
+        value_fn=_horizontal_accuracy,
     ),
-    LymowSensorDesc(
-        key="rtk_satellites",
-        name="RTK Satellites",
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:satellite-variant",
-        value_source=lambda d: (d.get("rtkDiagnosticL1") or {}).get("satelliteCount"),
-        entity_registry_enabled_default=False,
-    ),
-
-    # ── Connectivity ─────────────────────────────────────────────────────
     LymowSensorDesc(
         key="wifi_signal",
-        name="WiFi Signal",
-        native_unit_of_measurement="dBm",
+        translation_key="wifi_signal",
+        entity_category=EntityCategory.DIAGNOSTIC,
         device_class=SensorDeviceClass.SIGNAL_STRENGTH,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:wifi",
-        # Try top-level wifiSignalQuality first, then nested netDetailInfo.wifiSignal
-        value_source=lambda d: d.get(F_WIFI_SIGNAL) or _net(NET_WIFI_SIGNAL)(d),
-        entity_registry_enabled_default=False,
+        native_unit_of_measurement="dBm",
+        value_fn=_wifi_signal,
     ),
     LymowSensorDesc(
         key="lte_signal",
-        name="4G Signal",
-        native_unit_of_measurement="dBm",
+        translation_key="lte_signal",
+        entity_category=EntityCategory.DIAGNOSTIC,
         device_class=SensorDeviceClass.SIGNAL_STRENGTH,
-        state_class=SensorStateClass.MEASUREMENT,
-        icon="mdi:signal-4g",
-        value_source=lambda d: d.get(F_LTE_SIGNAL) or _net(NET_SIM_SIGNAL)(d),
-        entity_registry_enabled_default=False,
+        native_unit_of_measurement="dBm",
+        value_fn=_lte_signal,
     ),
     LymowSensorDesc(
-        key="wifi_name",
-        name="WiFi Network",
-        icon="mdi:wifi-settings",
-        value_source=_net("wifiName"),
-        entity_registry_enabled_default=False,
+        key="firmware",
+        translation_key="firmware",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=_firmware,
     ),
-    LymowSensorDesc(
-        key="sim_iccid",
-        name="SIM ICCID",
-        icon="mdi:sim",
-        value_source=_net("simIccid"),
-        entity_registry_enabled_default=False,
-    ),
-
-    # ── Firmware ─────────────────────────────────────────────────────────
-    LymowSensorDesc(
-        key="fw_version",
-        name="Firmware",
-        icon="mdi:chip",
-        # F_FW_VERSION is a string at the top level of the shadow,
-        # not the nested fwVersion object (F_FW_DATA).
-        value_source=F_FW_VERSION,
-        entity_registry_enabled_default=False,
-    ),
-    LymowSensorDesc(
-        key="mcu_version",
-        name="MCU Version",
-        icon="mdi:memory",
-        value_source=F_MCU_VERSION,
-        entity_registry_enabled_default=False,
-    ),
-
-    # ── Network / Camera ─────────────────────────────────────────────────
     LymowSensorDesc(
         key="ip_address",
-        name="IP Address",
+        translation_key="ip_address",
+        entity_category=EntityCategory.DIAGNOSTIC,
         icon="mdi:ip-network",
-        # ipAddress lives inside the nested fwVersion protobuf object (F_FW_DATA).
-        # Fallback chain: fwVersion.ipAddress → netDetailInfo.wifiIp → top-level ipAddress.
-        value_source=lambda d: (
-            (d.get("fwVersion") or {}).get("ipAddress")
-            or (d.get("netDetailInfo") or {}).get("wifiIp")
-            or d.get("ipAddress")
-        ),
-        entity_registry_enabled_default=False,
+        value_fn=_ip_address,
     ),
     LymowSensorDesc(
-        key="rtsp_url",
-        name="Camera URL",
-        icon="mdi:cctv",
-        # Full RTSP URL built the same way the official app does:
-        #   deviceProfile.ipAddress + ":10022/h264ESVideoTest"
-        # Use this sensor value in go2rtc or a Generic Camera entity.
-        # Disabled by default — enable if you want the URL as a sensor state.
-        value_source=lambda d: (
-            f"rtsp://{ip}:10022/h264ESVideoTest"
-            if (ip := (
-                (d.get("fwVersion") or {}).get("ipAddress")
-                or (d.get("netDetailInfo") or {}).get("wifiIp")
-                or d.get("ipAddress")
-            ))
-            else None
-        ),
-        entity_registry_enabled_default=False,
+        key="zone_size",
+        translation_key="zone_size",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        device_class=SensorDeviceClass.AREA,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfArea.SQUARE_METERS,
+        suggested_display_precision=0,
+        value_fn=_zone_size,
+    ),
+    LymowSensorDesc(
+        key="total_mapped_area",
+        translation_key="total_mapped_area",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        device_class=SensorDeviceClass.AREA,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfArea.SQUARE_METERS,
+        suggested_display_precision=0,
+        value_fn=_total_mapped_area,
+    ),
+    LymowSensorDesc(
+        key="last_mow_battery_used",
+        translation_key="last_mow_battery_used",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        native_unit_of_measurement=PERCENTAGE,
+        value_fn=_last_mow_battery_used,
+    ),
+    LymowSensorDesc(
+        key="last_mow_zones",
+        translation_key="last_mow_zones",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=_last_mow_zones,
+    ),
+    LymowSensorDesc(
+        key="last_mow_end_type",
+        translation_key="last_mow_end_type",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=_last_mow_end_type,
     ),
 )
 
 
-async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
-) -> None:
-    coord: LymowCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
-        [LymowSensor(coord, desc) for desc in SENSORS],
-        update_before_add=False,
-    )
-
+# ─────────────────────────────────────────────
+# Entity class
+# ─────────────────────────────────────────────
 
 class LymowSensor(LymowEntity, SensorEntity):
     """Generic Lymow sensor."""
 
     entity_description: LymowSensorDesc
 
-    def __init__(self, coordinator: LymowCoordinator, desc: LymowSensorDesc) -> None:
+    def __init__(
+        self, coordinator: LymowCoordinator, desc: LymowSensorDesc
+    ) -> None:
         super().__init__(coordinator, desc.key)
         self.entity_description = desc
 
     @property
-    def native_value(self) -> Any:
-        d = self.coordinator.data or {}
-        src = self.entity_description.value_source
+    def native_value(self):
+        return self.entity_description.value_fn(self.coordinator.state_dict)
 
-        raw = src(d) if callable(src) else d.get(src)
-        if raw is None:
-            return None
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        # warning_code: expose all_codes + label list
+        if self.entity_description.key == "warning_code":
+            codes = self.coordinator.state_dict.get("warningCodes") or []
+            return {
+                "all_codes": codes,
+                "labels": [
+                    WARNING_CODE_LABELS.get(c, f"unknown_{c}") for c in codes
+                ],
+            }
+        # next_schedule: expose full schedule list
+        if self.entity_description.key == "next_schedule":
+            schedules = self.coordinator.state_dict.get("schedules") or []
+            return {
+                "schedules": [
+                    {
+                        "id": s.id,
+                        "days": s.days_of_week,
+                        "hour": s.hour,
+                        "minute": s.minute,
+                        "disabled": s.is_disabled,
+                        "zones": s.zone_hash_ids,
+                    }
+                    for s in schedules
+                ],
+            }
+        return None
 
-        if fn := self.entity_description.transform:
-            return fn(raw)
-        return raw
+
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
+    coord: LymowCoordinator = hass.data[DOMAIN][entry.entry_id]
+    entities = [
+        LymowSensor(coord, d)
+        for d in (*PRIMARY_SENSORS, *DIAGNOSTIC_SENSORS)
+    ]
+    async_add_entities(entities)
