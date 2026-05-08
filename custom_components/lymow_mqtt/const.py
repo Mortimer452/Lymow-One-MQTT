@@ -224,51 +224,78 @@ F_LINEAR_SPEED   = "linearSpeed"        # float
 F_ANGULAR_SPEED  = "angularSpeed"       # float
 
 # ─────────────────────────────────────────────────────────────
-# Known error codes (partial — at least 84 codes in the app)
+# Error codes (arch.md §9, ported from ..\Lymow-HA-main\lymow_error_codes.py)
+# Full 51-entry table. Where multiple ErrorCode enums share a numeric code,
+# the first enum is used as the canonical name (i18n grouping in the source
+# means title/label is identical across the group).
+# Format: code -> (enum_name, user-facing_label)
 # ─────────────────────────────────────────────────────────────
-ERROR_CODE_LABELS: dict[int, str] = {
-    0:  "No error",
-    1:  "Wheel drive malfunction",
-    2:  "Wheel temperature abnormal",
-    3:  "Wheel communication lost",
-    4:  "Battery temperature abnormal",
-    5:  "Battery charging abnormal",
-    6:  "Battery voltage abnormal",
-    7:  "First lift blocked",
-    10: "Malfunction (10)",
-    13: "Malfunction (13/73/79)",
-    15: "Malfunction (15)",
-    16: "Malfunction (16)",
-    17: "Malfunction (17)",
-    18: "Malfunction (18)",
-    19: "Malfunction (19/84)",
-    20: "Malfunction (20/64/65)",
-    21: "Malfunction (21/66)",
-    25: "Malfunction (25)",
-    27: "Malfunction (27)",
-    28: "Malfunction (28)",
-    29: "Malfunction (29/80)",
-    30: "Malfunction (30)",
-    31: "Low battery",
-    32: "Malfunction (32)",
-    33: "Malfunction (33)",
-    34: "Malfunction (34)",
-    44: "Malfunction (44)",
-    45: "Malfunction (45)",
-    46: "Malfunction (46)",
-    51: "Warning: No RTK base station",
-    52: "Warning: RTK bind failed",
-    58: "Malfunction (58)",
-    61: "RTK base station error",
-    72: "Malfunction (72)",
-    74: "Malfunction (74/75)",
-    76: "Malfunction (76/77)",
-    81: "Malfunction (81/82)",
-    83: "Malfunction (83)",
+ERROR_CODES: dict[int, tuple[str, str]] = {
+     1: ("ERROR_WHEEL_DRIVE_MALFUNCTION", "Wheel Motor Error"),
+     2: ("ERROR_WHEEL_TEMP_ABN", "Motor Overheat"),
+     3: ("ERROR_WHEEL_DRIVE_MALFUNCTION", "Wheel Motor Error"),
+     7: ("ERROR_FIRST_LIFT_BLOCKED", "Lifting Motor Jammed"),
+    10: ("ERROR_BLADE_COMM_LOST", "Blade Motor Error"),
+    13: ("ERROR_LOC_VIO_FAILED", "Navigation Internal Error"),
+    15: ("ERROR_LOC_INIT_RTK_NOT_FIX", "Weak RTK Signal"),
+    16: ("ERROR_LOC_INIT_TIMEOUT", "Location Service Init Timeout"),
+    17: ("ERROR_ROBOT_CLIFF", "Unsafe Drop Detected"),
+    18: ("ERROR_ROBOT_INCLINE", "Excessive Tilt Detected"),
+    19: ("ERROR_ROBOT_SLIP", "Slipping Detected"),
+    20: ("ERROR_ROBOT_OUT_OF_MAP", "Out of Bounds"),
+    21: ("ERROR_ROBOT_STUCK", "Mower Stuck"),
+    25: ("ERROR_MAP_NO_DOCK", "Charging Station not Detected"),
+    27: ("ERROR_MAP_ZERO_GO_ZONES", "No Available Mowing Zone"),
+    28: ("ERROR_MAP_ZONE_UNREACHABLE", "Zone Not Reachable"),
+    29: ("ERROR_DOCK_NOT_FOUND", "Charging Station Tag Not Detected"),
+    30: ("ERROR_DOCK_ERROR", "Docking Failed"),
+    31: ("ERROR_LOW_BATTERY", "Battery Low"),
+    32: ("ERROR_SENSOR_CAMERA", "Camera Signal Lost"),
+    33: ("ERROR_SENSOR_IMU0", "IMU Signal Lost"),
+    34: ("ERROR_SENSOR_GNSS", "GPS Signal Lost"),
+    44: ("ERROR_BUMPER_STUCK", "Bumper Jammed"),
+    45: ("ERROR_BLADE_STUCK", "Blade Jammed"),
+    46: ("ERROR_LOC_COMM_LOST", "Location Service Unstable"),
+    50: ("ERROR_PP_CHANNEL_ERROR", "Navigation Internal Error"),
+    51: ("ERROR_PP_DOCK_SIGNAL_LOST", "Charging Not Detected"),
+    52: ("ERROR_PP_DOCK_PATH_NOT_FOUND", "Charging Station Not Reachable"),
+    53: ("ERROR_PP_CHANNEL_ERROR", "Navigation Internal Error"),
+    58: ("ERROR_BASE_STATION_INVALID", "Charging Station Placement Issue"),
+    61: ("ERROR_LOC_RTK_BASE", "No ENU Base Point from RTK Base Station"),
+    64: ("ERROR_ROBOT_OUT_OF_MAP", "Out of Bounds"),
+    65: ("ERROR_ROBOT_OUT_OF_MAP", "Out of Bounds"),
+    66: ("ERROR_ROBOT_STUCK", "Mower Stuck"),
+    67: ("ERROR_PP_CHANNEL_ERROR", "Navigation Internal Error"),
+    68: ("ERROR_PP_CHANNEL_ERROR", "Navigation Internal Error"),
+    69: ("ERROR_PP_CHANNEL_ERROR", "Navigation Internal Error"),
+    70: ("ERROR_PP_CHANNEL_ERROR", "Navigation Internal Error"),
+    71: ("ERROR_PP_CHANNEL_ERROR", "Navigation Internal Error"),
+    72: ("ERROR_CMD_WHEEL_SPD_INCOMPATIBLE", "Wheel Motor Control Fault"),
+    73: ("ERROR_LOC_VIO_FAILED", "Navigation Internal Error"),
+    74: ("ERROR_CHANNEL_BUMPER", "Channel Obstacle Detected"),
+    75: ("ERROR_CHANNEL_BUMPER", "Channel Obstacle Detected"),
+    76: ("ERROR_EDGE_FOLLOW_OBS", "Perimeter Obstacle Detected"),
+    77: ("ERROR_EDGE_FOLLOW_OBS", "Perimeter Obstacle Detected"),
+    79: ("ERROR_LOC_VIO_FAILED", "Navigation Internal Error"),
+    80: ("ERROR_DOCK_NOT_FOUND", "Charging Station Tag Not Detected"),
+    81: ("ERROR_LOC_EDGE_SCORE_LOW", "Weak RTK Signal"),
+    82: ("ERROR_LOC_EDGE_SCORE_LOW", "Weak RTK Signal"),
+    83: ("ERROR_CHANNEL_SLIP", "Slipping on the Channel"),
+    84: ("ERROR_ROBOT_SLIP", "Slipping Detected"),
 }
 
+
 def error_label(code: int) -> str:
-    return ERROR_CODE_LABELS.get(code, f"Error {code}")
+    """Friendly label for an error code; fallback to E<N> for unknown."""
+    entry = ERROR_CODES.get(code)
+    if entry:
+        return entry[1]
+    return f"E{code}"
+
+
+# Backwards-compat alias for existing callers that imported ERROR_CODE_LABELS
+# as a code->label dict. Derived from ERROR_CODES.
+ERROR_CODE_LABELS: dict[int, str] = {code: lbl for code, (_, lbl) in ERROR_CODES.items()}
 
 # ─────────────────────────────────────────────────────────────
 # Services
