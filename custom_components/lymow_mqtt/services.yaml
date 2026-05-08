@@ -1,54 +1,52 @@
-start_zone:
-  name: Start Zone
-  description: Start mowing one or more specific zones
+start_zones:
+  name: Start zones
+  description: Start mowing on a specified list of zones in the given order.
   fields:
-    entry_id:
-      name: Entry ID
-      description: Config entry ID (optional if only one robot)
-      required: false
+    device_id:
+      name: Device
+      description: The Lymow mower to command.
+      required: true
       selector:
-        text:
+        device:
+          integration: lymow_mqtt
     zone_ids:
-      name: Zone IDs
-      description: List of zone hash IDs to mow (empty = all zones)
-      required: false
+      name: Zone hash IDs
+      description: |
+        Ordered list of zone hashIds to mow. The mower will execute them
+        in order. Use the QUERY_MAP response or device diagnostics to
+        find zone hashIds.
+      required: true
+      example: ["aaaa1111", "bbbb2222"]
       selector:
         object:
 
-set_blade_height:
-  name: Set Blade Height
-  description: Set the cutting blade height in mm
+dock_cancel_task:
+  name: Dock and abandon task
+  description: |
+    Send the mower home AND abandon any in-progress task. Destructive —
+    task progress is reset and cannot be resumed.
+    For preserve-task docking, use the standard Dock action on the
+    lawn_mower entity, which sends RECHARGE_DOCK.
   fields:
-    entry_id:
-      name: Entry ID
-      description: Config entry ID
-      required: false
-      selector:
-        text:
-    height_mm:
-      name: Height (mm)
-      description: Cutting height in millimeters (20-60, step 5)
+    device_id:
+      name: Device
+      description: The Lymow mower to command.
       required: true
       selector:
-        number:
-          min: 20
-          max: 60
-          step: 5
-          unit_of_measurement: mm
+        device:
+          integration: lymow_mqtt
 
-set_schedule:
-  name: Set Mowing Schedule
-  description: Configure the weekly mowing schedule
+cancel_task:
+  name: Cancel task (force reinit)
+  description: |
+    Force the mower to reset to WAITING state. Stops in place — does NOT
+    drive home. Use when stuck in error and the regular Pause/Resume
+    can't recover.
   fields:
-    entry_id:
-      name: Entry ID
-      description: Config entry ID
-      required: false
-      selector:
-        text:
-    schedules:
-      name: Schedules
-      description: "List of schedule entries: [{day (0=Sun…6=Sat), startHour, startMin, duration (min)}]"
+    device_id:
+      name: Device
+      description: The Lymow mower to command.
       required: true
       selector:
-        object:
+        device:
+          integration: lymow_mqtt
