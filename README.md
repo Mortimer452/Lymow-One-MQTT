@@ -37,7 +37,7 @@ The config flow walks you through:
 1. **Region** — pick your AWS region (us-east-2, eu-west-1, ap-southeast-2, ap-east-1).
 2. **Sign-in method:**
    - **Email + password** (native account) — straightforward.
-   - **Sign in with Google or Apple** (federated) — needs a one-time browser paste step. Click the link the integration shows you, sign in, and your browser will fail to redirect to `myapp://callback/...` — that's expected. Copy the URL from your address bar and paste it back into HA.
+   - **Sign in with Google or Apple** (federated) — Works, but very fiddley as Lymo's federated OAth config is locked down. Needs a one-time browser paste step. Click the link the integration shows you, sign in, and your browser will fail to redirect to `myapp://callback/...` — that's expected. Copy the URL from your address bar or dev tools window and paste it back into HA.
 3. **Mower** — pick which Lymow mower to add (one config entry per mower if you have multiple).
 
 ## RTSP camera

@@ -35,7 +35,8 @@
     "abort": {
       "device_list_failed": "Could not retrieve device list — sign-in succeeded but the device-list API failed.",
       "no_devices": "No mowers found on this account.",
-      "already_configured": "This mower is already added to Home Assistant."
+      "already_configured": "This mower is already added to Home Assistant.",
+      "reauth_successful": "Re-authentication was successful."
     }
   },
   "entity": {
