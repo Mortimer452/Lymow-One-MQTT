@@ -96,7 +96,7 @@ class CognitoAuth:
             return u.id_token, u.access_token, u.refresh_token
 
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             id_t, acc_t, ref_t = await loop.run_in_executor(None, _do_srp)
         except Exception as e:
             raise LymowAuthError(f"SRP login failed: {e}") from e
@@ -116,7 +116,7 @@ class CognitoAuth:
         The user obtained the code by completing the OAuth flow in a browser
         and copying it from the failed myapp://callback redirect URL.
         """
-        token_url = f"https://us-auth.lymow.com/oauth2/token"  # TODO: make region-aware if hosted UI per-region
+        token_url = f"https://{self._cfg['hosted_ui_domain']}/oauth2/token"
         data = {
             "grant_type": "authorization_code",
             "client_id": self._cfg["client_id"],
@@ -131,6 +131,9 @@ class CognitoAuth:
             body = await r.json(content_type=None)
             if r.status != 200:
                 raise LymowAuthError(f"OAuth exchange failed: {body}")
+        # Cognito sometimes returns 200 with an error payload — guard against it
+        if "id_token" not in body or "access_token" not in body:
+            raise LymowAuthError(f"OAuth exchange returned no tokens: {body}")
 
         self.id_token = body["id_token"]
         self.access_token = body["access_token"]
@@ -149,7 +152,7 @@ class CognitoAuth:
         if not self.refresh_token:
             raise LymowAuthError("No refresh_token — re-login required")
 
-        token_url = "https://us-auth.lymow.com/oauth2/token"
+        token_url = f"https://{self._cfg['hosted_ui_domain']}/oauth2/token"
         data = {
             "grant_type": "refresh_token",
             "client_id": self._cfg["client_id"],
@@ -163,6 +166,9 @@ class CognitoAuth:
             body = await r.json(content_type=None)
             if r.status != 200:
                 raise LymowAuthError(f"Refresh failed: {body}")
+        # Cognito sometimes returns 200 with an error payload — guard against it
+        if "id_token" not in body or "access_token" not in body:
+            raise LymowAuthError(f"Refresh returned no tokens: {body}")
 
         self.id_token = body["id_token"]
         self.access_token = body["access_token"]
