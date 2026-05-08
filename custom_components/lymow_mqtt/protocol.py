@@ -231,6 +231,10 @@ class ZoneInfo:
     mow_order: int  # 0 if not in active task
     is_enabled: bool
     polygon_points: list[tuple[float, float]]  # local-frame (x, y) pairs
+    # Optional per-zone config (PbZoneConfig). Populated by parse_zone_catalog
+    # when the inner PbZone carries a zoneConfig sub-message. Used by
+    # state.active_cut_config for the per-zone tier of the inheritance walker.
+    zone_config: object | None = None
 
 
 @dataclass
@@ -305,6 +309,16 @@ def parse_zone_catalog(bt_map) -> ZoneCatalog:
                 is_enabled=bool(bi.get("isEnabled")) if bi.get("isEnabled") is not None else True,
                 polygon_points=list(bi.get("polygon") or []),
             )
+            # Parse field 2 (zoneConfig) into a PbZoneConfig if present so
+            # state.active_cut_config can read per-zone overrides via HasField.
+            if 2 in zone_msg:
+                try:
+                    zc_bytes = zone_msg[2][0][1]
+                    zc = pb.PbZoneConfig()
+                    zc.ParseFromString(zc_bytes)
+                    zi.zone_config = zc
+                except Exception:
+                    zi.zone_config = None
             catalog.zones.append(zi)
             catalog.zones_by_hashid[zi.hash_id] = zi
         except Exception:

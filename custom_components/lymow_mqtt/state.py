@@ -126,3 +126,74 @@ def derive_current_zone(state_dict: dict[str, Any]) -> str | None:
             return f"{n1} → {n2}"
 
     return None  # mower is somewhere between defined polygons (rare)
+
+
+def _zone_at_pose(state_dict: dict[str, Any]):
+    """Return the ZoneInfo the mower is currently inside, or None."""
+    pose = state_dict.get("pose")
+    catalog = state_dict.get("zone_catalog")
+    if not pose or not catalog:
+        return None
+    for zone in catalog.zones:
+        if zone.polygon_points and point_in_polygon(pose.x, pose.y, zone.polygon_points):
+            return zone
+    return None
+
+
+def _has_field(msg, name: str) -> bool:
+    """HasField with graceful fallback for fields that don't track presence."""
+    try:
+        return msg.HasField(name)
+    except (ValueError, AttributeError):
+        # Proto3 implicit-presence scalar; treat truthy values as "set".
+        return bool(getattr(msg, name, None))
+
+
+def active_cut_config(state_dict: dict[str, Any]) -> dict[str, Any]:
+    """Walk schedule_config -> zone_config -> runtime_config and return active cut params.
+
+    Per arch.md §6c: cut height/speed values cascade from per-task schedule
+    overrides down to the global runtime config. Move speed only ever comes
+    from the per-zone or schedule-override tiers; PbRobotConfig has no
+    global moveSpeed field.
+
+    Returns dict with keys: cut_speed (int 3-6 or None), cut_height (int mm),
+    move_speed (float m/s or None).
+    """
+    result: dict[str, Any] = {"cut_speed": None, "cut_height": None, "move_speed": None}
+
+    current_zone = _zone_at_pose(state_dict)
+    active_schedule = state_dict.get("active_schedule")  # PbSchedule of currently-running task, if any
+
+    # Tier 1: schedule override per-zone
+    if current_zone is not None and active_schedule is not None:
+        for sc in getattr(active_schedule, "config", []):
+            if sc.hashId == current_zone.hash_id:
+                if _has_field(sc, "cutHeight"):
+                    result["cut_height"] = sc.cutHeight
+                if _has_field(sc, "moveSpeed"):
+                    result["move_speed"] = sc.moveSpeed
+                # PbScheduleConfig has no cutSpeed, fall through to zone for that
+                break
+
+    # Tier 2: per-zone PbZoneConfig from catalog
+    if current_zone is not None:
+        zc = getattr(current_zone, "zone_config", None)
+        if zc is not None:
+            if result["cut_speed"] is None and _has_field(zc, "cutSpeed"):
+                result["cut_speed"] = zc.cutSpeed
+            if result["cut_height"] is None and _has_field(zc, "cutHeight"):
+                result["cut_height"] = zc.cutHeight
+            if result["move_speed"] is None and _has_field(zc, "moveSpeed"):
+                result["move_speed"] = zc.moveSpeed
+
+    # Tier 3: global runtime config (PbRobotConfig — note rc-prefixed fields,
+    # and there is no moveSpeed at this tier)
+    rc = state_dict.get("runtime_config")
+    if rc is not None:
+        if result["cut_speed"] is None and _has_field(rc, "rcCutSpeed"):
+            result["cut_speed"] = rc.rcCutSpeed
+        if result["cut_height"] is None and _has_field(rc, "rcCutHeight"):
+            result["cut_height"] = rc.rcCutHeight
+
+    return result

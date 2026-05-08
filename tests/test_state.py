@@ -90,3 +90,67 @@ class TestMergePbOutput:
         # The per-broadcast resolution happens in the coordinator using
         # robotStatus transitions (7 -> non-7) as the cleared-error signal.
         assert s.get("errorCodes") == [45]  # unchanged
+
+
+class TestActiveCutConfig:
+    def test_falls_through_to_runtime_when_no_zone(self):
+        # PbRobotConfig (the global runtime config) uses rc-prefixed fields:
+        # rcCutHeight, rcCutSpeed. There is no moveSpeed on PbRobotConfig
+        # (move speed is per-zone or schedule-override only — see arch.md §6c).
+        import lymow_extracted_pb2 as pb
+        rc = pb.PbRobotConfig()
+        rc.rcCutHeight = 60
+        rc.rcCutSpeed = 4
+        s = {"runtime_config": rc}
+        result = state.active_cut_config(s)
+        assert result["cut_height"] == 60
+        assert result["cut_speed"] == 4
+        # No zone → no move_speed source available
+        assert result["move_speed"] is None
+
+    def test_returns_zone_config_when_zone_known(self):
+        # Build a synthetic state with a zone_catalog and matching active zone
+        from lymow_mqtt.protocol import ZoneCatalog, ZoneInfo
+        import lymow_extracted_pb2 as pb
+        zone = ZoneInfo(
+            hash_id="abc12345",
+            name="Pool",
+            mow_order=1,
+            is_enabled=True,
+            polygon_points=[(0, 0), (10, 0), (10, 10), (0, 10)],
+        )
+        # Stash the PbZoneConfig on the ZoneInfo (the parser does this in
+        # production; tests build the catalog by hand).
+        zone.zone_config = pb.PbZoneConfig()
+        zone.zone_config.cutSpeed = 5
+        zone.zone_config.cutHeight = 50
+        zone.zone_config.moveSpeed = 0.6
+        catalog = ZoneCatalog()
+        catalog.zones.append(zone)
+        catalog.zones_by_hashid[zone.hash_id] = zone
+
+        # Mower pose inside the zone, mowing
+        pose = pb.PbPose()
+        pose.x = 5.0
+        pose.y = 5.0
+        robot_info = pb.PbRobotInfo()
+        robot_info.workStatus = 2  # MOWING
+
+        # Runtime config has a different cutHeight; should NOT be picked
+        # because the zone-tier wins.
+        rc = pb.PbRobotConfig()
+        rc.rcCutHeight = 99
+        s = {
+            "zone_catalog": catalog,
+            "pose": pose,
+            "robotInfo": robot_info,
+            "runtime_config": rc,
+        }
+        result = state.active_cut_config(s)
+        assert result["cut_height"] == 50
+        assert result["cut_speed"] == 5
+        assert result["move_speed"] == pytest.approx(0.6)
+
+    def test_returns_none_dict_when_no_state(self):
+        result = state.active_cut_config({})
+        assert result == {"cut_speed": None, "cut_height": None, "move_speed": None}
