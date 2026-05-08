@@ -66,3 +66,31 @@ def encode_start_zones(zone_hash_ids: list[str]) -> bytes:
         zone.basicInfo.hashId = hash_id
         zone.basicInfo.mowOrder = i
     return pb_in.SerializeToString()
+
+
+def decode_pboutput(raw: bytes) -> pb.PbOutput:
+    """Parse raw protobuf bytes as PbOutput. Raises on malformed input."""
+    msg = pb.PbOutput()
+    msg.ParseFromString(raw)
+    return msg
+
+
+def decode_pboutput_envelope(envelope_bytes: bytes) -> pb.PbOutput:
+    """Decode either a JSON envelope or raw protobuf as PbOutput.
+
+    Real /pboutput payloads come over the wire wrapped in a JSON envelope
+    (`{"message": "<base64>"}`); test fixtures may be either format.
+    """
+    stripped = envelope_bytes.lstrip()
+    if stripped.startswith(b"{"):
+        return decode_pboutput(unwrap_envelope(envelope_bytes))
+    return decode_pboutput(envelope_bytes)
+
+
+def populated_fields(msg: pb.PbOutput) -> list[str]:
+    """Return the names of fields actually present in the message.
+
+    Used by state-merge to know which submessages to refresh in the
+    coordinator's state dict.
+    """
+    return [field.name for field, _ in msg.ListFields()]
