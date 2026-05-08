@@ -25,3 +25,18 @@ class TestEnvelope:
         # Real captures have tabs/newlines around fields
         envelope = b'{\n\t"message" : "aGVsbG8="\n}'
         assert protocol.unwrap_envelope(envelope) == b"hello"
+
+
+class TestEncodeUserCtrl:
+    def test_simple_userctrl_pause(self):
+        """USER_CTRL_PAUSE = 3 produces the documented 4-byte protobuf."""
+        raw = protocol.encode_userctrl(3)
+        # PbInput { userCtrl: 3, version: 40 } = bytes "10 28 28 03"
+        # field 2 (version) tag = 0x10, value 40 = 0x28
+        # field 5 (userCtrl) tag = 0x28, value 3 = 0x03
+        assert raw == bytes([0x10, 0x28, 0x28, 0x03])
+
+    def test_userctrl_dock_recharge(self):
+        """USER_CTRL_RECHARGE_DOCK = 33 produces a 4-byte protobuf."""
+        raw = protocol.encode_userctrl(33)
+        assert raw == bytes([0x10, 0x28, 0x28, 0x21])  # 33 = 0x21
