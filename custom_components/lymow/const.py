@@ -1,4 +1,4 @@
-"""Constants for the Lymow integration — field names verified from APK decompilation."""
+"""Constants for the Lymow integration"""
 
 DOMAIN = "lymow"
 MANUFACTURER = "Lymow"
@@ -272,3 +272,34 @@ def error_label(code: int) -> str:
 SERVICE_START_ZONE   = "start_zone"
 SERVICE_SET_BLADE    = "set_blade_height"
 SERVICE_SET_SCHEDULE = "set_schedule"
+
+# ─────────────────────────────────────────────────────────────
+# Lift sensor — verified from APK protobuf enums
+# ─────────────────────────────────────────────────────────────
+# ERROR_FIRST_LIFT_BLOCKED  = 7  → appears in errorCodes[]
+# ERROR_SECOND_LIFT_BLOCKED = 8  → appears in errorCodes[]
+# WARNING_FIRST_LIFT_TIMEOUT  = 5 → appears in warningCodes[]
+# WARNING_SECOND_LIFT_TIMEOUT = 6 → appears in warningCodes[]
+# BLE-only signals (not in cloud shadow): SIGNAL_ONE_CLICK_LIFT,
+# SIGNAL_MCU_LIFT_LITTLE, SIGNAL_MCU_RESTORE_LIFT
+LIFT_ERROR_CODES   = {7, 8}  # robot lifted or lift mechanism blocked
+LIFT_WARNING_CODES = {5, 6}  # lift timeout warnings
+
+# warningCodes is a separate list from errorCodes in the protobuf message
+F_WARNING_CODES = "warningCodes"   # list[int]
+
+# ─────────────────────────────────────────────────────────────
+# fwVersion protobuf object (nested in shadow — BLE/device info)
+# Fields verified from APK protobuf encoder/decoder
+# ─────────────────────────────────────────────────────────────
+# The app builds the RTSP camera URL as:
+#   deviceProfile.ipAddress + ":10022/h264ESVideoTest"
+# ipAddress comes from fwVersion.ipAddress in the shadow.
+F_FW_DATA    = "fwVersion"     # nested dict (fwVersion protobuf object)
+F_IP_ADDRESS = "ipAddress"     # str  robot's local WiFi IP (inside fwVersion)
+F_WIFI_SSID  = "wifiSsid"      # str  connected WiFi SSID (inside fwVersion)
+F_MAC        = "macAddress"    # str  robot MAC address (inside fwVersion)
+F_SERIAL_NO  = "sn"            # str  robot serial number (inside fwVersion)
+
+RTSP_PORT = 10022
+RTSP_PATH = "h264ESVideoTest"
