@@ -154,3 +154,30 @@ class TestActiveCutConfig:
     def test_returns_none_dict_when_no_state(self):
         result = state.active_cut_config({})
         assert result == {"cut_speed": None, "cut_height": None, "move_speed": None}
+
+
+from datetime import UTC, datetime, timedelta
+
+
+class TestResolveOnline:
+    def _now(self) -> datetime:
+        return datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)
+
+    def test_rest_online_no_mqtt_returns_online(self):
+        assert state.resolve_online(rest_online=True, last_mqtt_at=None, now=self._now()) is True
+
+    def test_rest_online_with_mqtt_returns_online(self):
+        recent = self._now() - timedelta(seconds=30)
+        assert state.resolve_online(rest_online=True, last_mqtt_at=recent, now=self._now()) is True
+
+    def test_rest_offline_no_mqtt_returns_offline(self):
+        assert state.resolve_online(rest_online=False, last_mqtt_at=None, now=self._now()) is False
+
+    def test_rest_offline_recent_mqtt_overrides_to_online(self):
+        """The corner case from spec §7.3 — fresh MQTT in last 5min trumps stale REST."""
+        recent = self._now() - timedelta(minutes=2)
+        assert state.resolve_online(rest_online=False, last_mqtt_at=recent, now=self._now()) is True
+
+    def test_rest_offline_old_mqtt_returns_offline(self):
+        old = self._now() - timedelta(minutes=10)
+        assert state.resolve_online(rest_online=False, last_mqtt_at=old, now=self._now()) is False

@@ -6,6 +6,7 @@ just provides the merge and derivation logic.
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .const import ACTIVE_TASK_WORK_STATUSES
@@ -197,3 +198,26 @@ def active_cut_config(state_dict: dict[str, Any]) -> dict[str, Any]:
             result["cut_height"] = rc.rcCutHeight
 
     return result
+
+
+def resolve_online(
+    rest_online: bool,
+    last_mqtt_at: datetime | None,
+    now: datetime | None = None,
+    mqtt_recency_window: timedelta = timedelta(minutes=5),
+) -> bool:
+    """Combine REST and MQTT signals into a single online truth.
+
+    Per spec §7.3: REST is authoritative, BUT a fresh MQTT broadcast
+    (< mqtt_recency_window old) overrides a stale REST -> offline reading.
+    """
+    if rest_online:
+        return True
+    # REST says offline. Check for fresh MQTT activity.
+    if last_mqtt_at is None:
+        return False
+    if now is None:
+        now = datetime.now(UTC)
+    if (now - last_mqtt_at) < mqtt_recency_window:
+        return True  # MQTT activity overrides stale REST
+    return False
