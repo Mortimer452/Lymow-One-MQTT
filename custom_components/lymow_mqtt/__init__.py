@@ -1,156 +1,152 @@
-"""Lymow Robot Mower integration."""
-
+"""Lymow MQTT integration entry point."""
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
 
 import voluptuous as vol
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.helpers import config_validation as cv
+from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import CognitoAuth, LymowClient
-from .const import (
-    CLEAN_MODE_OPTIONS,
-    CONF_EMAIL,
-    CONF_PASSWORD,
-    CONF_REGION,
-    DEFAULT_SCAN_INTERVAL,
-    DOMAIN,
-    SERVICE_SET_BLADE,
-    SERVICE_SET_SCHEDULE,
-    SERVICE_START_ZONE,
-)
+from .auth import CognitoAuth
+from .const import CONF_EMAIL, CONF_PASSWORD, CONF_REGION, DOMAIN
 from .coordinator import LymowCoordinator
+from .rest import LymowREST
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [
+PLATFORMS: list[Platform] = [
     Platform.LAWN_MOWER,
     Platform.SENSOR,
     Platform.BINARY_SENSOR,
-    Platform.SELECT,
-    Platform.NUMBER,
     Platform.CAMERA,
 ]
 
+# Internal entry-data keys (must match config_flow.py)
+_CONF_AUTH_METHOD = "auth_method"
+_CONF_THING_NAME = "thing_name"
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Lymow from a config entry."""
-    email      = entry.data[CONF_EMAIL]
-    password   = entry.data[CONF_PASSWORD]
-    region     = entry.data[CONF_REGION]
-    thing_name = entry.data["thing_name"]
+    """Set up Lymow MQTT from a config entry."""
+    region = entry.data[CONF_REGION]
+    thing_name = entry.data[_CONF_THING_NAME]
 
     session = async_get_clientsession(hass)
-    auth    = CognitoAuth(region, session)
+    auth = CognitoAuth(region, session)
+    auth.from_dict(entry.data)
 
-    # Restore stored tokens to avoid re-login on every HA restart
-    if entry.data.get("refresh_token"):
-        auth.from_dict(entry.data)
-        try:
-            await auth.ensure_valid(email, password)
-        except Exception:
-            _LOGGER.warning("Stored tokens invalid for %s — re-logging in", thing_name)
-            await auth.login(email, password)
-            await auth.get_aws_credentials()
-    else:
-        await auth.login(email, password)
-        await auth.get_aws_credentials()
+    # Restore email/password if SRP (needed for offline re-login if refresh
+    # token rotates). The federated path can't re-login without user
+    # interaction, so reauth is triggered by the ensure_valid() failure below.
+    if entry.data.get(_CONF_AUTH_METHOD) == "srp":
+        auth._email = entry.data.get(CONF_EMAIL)
+        auth._password = entry.data.get(CONF_PASSWORD)
 
-    client = LymowClient(region, auth, session)
+    try:
+        await auth.ensure_valid()
+    except Exception as e:
+        _LOGGER.warning(
+            "Auth invalid for %s; triggering reauth: %s", thing_name, e
+        )
+        raise ConfigEntryAuthFailed("Token refresh failed") from e
 
-    scan_interval = entry.options.get("scan_interval", DEFAULT_SCAN_INTERVAL)
-    coordinator   = LymowCoordinator(
-        hass=hass,
-        auth=auth,
-        client=client,
-        thing_name=thing_name,
-        email=email,
-        password=password,
-    )
-    coordinator.update_interval = timedelta(seconds=scan_interval)
+    rest = LymowREST(region, auth, session)
+    coordinator = LymowCoordinator(hass, auth, rest, thing_name, region)
+    await coordinator.async_setup()
 
-    # Store reference so entity platforms can find it
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
-
-    # First refresh + static device info
-    await coordinator.async_config_entry_first_refresh()
-    await coordinator.async_refresh_device_info()
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN][entry.entry_id] = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # ── Register services (only once, even with multiple robots) ──────────
-
-    def _coord_for_call(call: ServiceCall) -> LymowCoordinator | None:
-        entry_id = call.data.get("entry_id")
-        if entry_id:
-            return hass.data[DOMAIN].get(entry_id)
-        coords = list(hass.data[DOMAIN].values())
-        return coords[0] if coords else None
-
-    if not hass.services.has_service(DOMAIN, SERVICE_START_ZONE):
-        async def handle_start_zone(call: ServiceCall) -> None:
-            if coord := _coord_for_call(call):
-                zone_ids = call.data.get("zone_ids") or None
-                await coord.async_start_mow(zone_ids=zone_ids)
-
-        hass.services.async_register(
-            DOMAIN, SERVICE_START_ZONE, handle_start_zone,
-            schema=vol.Schema({
-                vol.Optional("entry_id"): str,
-                vol.Optional("zone_ids", default=[]): [str],
-            }),
-        )
-
-    if not hass.services.has_service(DOMAIN, SERVICE_SET_BLADE):
-        async def handle_set_blade(call: ServiceCall) -> None:
-            if coord := _coord_for_call(call):
-                await coord.async_set_blade_height(call.data["height_mm"])
-
-        hass.services.async_register(
-            DOMAIN, SERVICE_SET_BLADE, handle_set_blade,
-            schema=vol.Schema({
-                vol.Optional("entry_id"): str,
-                vol.Required("height_mm"): vol.All(int, vol.Range(min=20, max=60)),
-            }),
-        )
-
-    if not hass.services.has_service(DOMAIN, SERVICE_SET_SCHEDULE):
-        async def handle_set_schedule(call: ServiceCall) -> None:
-            if coord := _coord_for_call(call):
-                await coord.async_set_schedule(call.data["schedules"])
-
-        hass.services.async_register(
-            DOMAIN, SERVICE_SET_SCHEDULE, handle_set_schedule,
-            schema=vol.Schema({
-                vol.Optional("entry_id"): str,
-                vol.Required("schedules"): [
-                    vol.Schema({
-                        vol.Required("day"):       vol.All(int, vol.Range(min=0, max=6)),
-                        vol.Required("startHour"): vol.All(int, vol.Range(min=0, max=23)),
-                        vol.Required("startMin"):  vol.All(int, vol.Range(min=0, max=59)),
-                        vol.Required("duration"):  vol.All(int, vol.Range(min=1, max=1440)),
-                    })
-                ],
-            }),
-        )
-
-    # Persist updated tokens after successful setup
-    hass.config_entries.async_update_entry(
-        entry,
-        data={**entry.data, **auth.to_dict()},
-    )
+    _register_services(hass)
 
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unloaded:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
-    return unloaded
+    coordinator: LymowCoordinator | None = hass.data.get(DOMAIN, {}).pop(
+        entry.entry_id, None
+    )
+    if coordinator is not None:
+        await coordinator.async_unload()
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+def _register_services(hass: HomeAssistant) -> None:
+    """Register service handlers (idempotent — only registers once per HA run)."""
+    if hass.services.has_service(DOMAIN, "start_zones"):
+        return
+
+    def _coord_for_device_id(call: ServiceCall) -> LymowCoordinator | None:
+        device_id = call.data.get("device_id")
+        if not device_id:
+            return None
+        if isinstance(device_id, list):
+            device_id = device_id[0] if device_id else None
+        if not device_id:
+            return None
+        device_reg = dr.async_get(hass)
+        device = device_reg.async_get(device_id)
+        if not device:
+            return None
+        # The device's identifiers contain (DOMAIN, thing_name)
+        for domain, thing_name in device.identifiers:
+            if domain == DOMAIN:
+                # Find the coordinator for this thing_name
+                for coord in hass.data.get(DOMAIN, {}).values():
+                    if getattr(coord, "thing_name", None) == thing_name:
+                        return coord
+        return None
+
+    async def _handle_start_zones(call: ServiceCall) -> None:
+        coord = _coord_for_device_id(call)
+        if not coord:
+            _LOGGER.warning("start_zones: no coordinator for device_id=%s", call.data.get("device_id"))
+            return
+        zone_ids = call.data.get("zone_ids", [])
+        await coord.cmd_start(zone_hash_ids=zone_ids)
+
+    async def _handle_dock_cancel_task(call: ServiceCall) -> None:
+        coord = _coord_for_device_id(call)
+        if not coord:
+            _LOGGER.warning("dock_cancel_task: no coordinator for device_id=%s", call.data.get("device_id"))
+            return
+        await coord.cmd_dock_cancel_task()
+
+    async def _handle_cancel_task(call: ServiceCall) -> None:
+        coord = _coord_for_device_id(call)
+        if not coord:
+            _LOGGER.warning("cancel_task: no coordinator for device_id=%s", call.data.get("device_id"))
+            return
+        await coord.cmd_force_reinit()
+
+    hass.services.async_register(
+        DOMAIN,
+        "start_zones",
+        _handle_start_zones,
+        schema=vol.Schema(
+            {
+                vol.Required("device_id"): vol.Any(str, [str]),
+                vol.Required("zone_ids"): [str],
+            }
+        ),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "dock_cancel_task",
+        _handle_dock_cancel_task,
+        schema=vol.Schema({vol.Required("device_id"): vol.Any(str, [str])}),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "cancel_task",
+        _handle_cancel_task,
+        schema=vol.Schema({vol.Required("device_id"): vol.Any(str, [str])}),
+    )
