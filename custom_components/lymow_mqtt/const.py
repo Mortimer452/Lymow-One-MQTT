@@ -104,18 +104,6 @@ WORK_STATUS_RTT            = 15  # factory RTT test mode
 # Virtual status (not in protobuf enum, set locally when shadow absent)
 WORK_STATUS_OFFLINE        = -1
 
-# Statuses that map to LawnMowerActivity.MOWING
-MOWING_STATUSES    = {WORK_STATUS_MOWING, WORK_STATUS_RESUME, WORK_STATUS_ZONE_PARTITION}
-# Statuses that map to LawnMowerActivity.RETURNING
-RETURNING_STATUSES = {WORK_STATUS_DOCKING, WORK_STATUS_PAUSE_DOCKING, WORK_STATUS_ESCAPING}
-# Statuses that map to LawnMowerActivity.DOCKED
-DOCKED_STATUSES    = {WORK_STATUS_NONE, WORK_STATUS_WAITING, WORK_STATUS_CHARGING,
-                      WORK_STATUS_CHARGING_FULL, WORK_STATUS_UPDATING}
-# Statuses that map to LawnMowerActivity.PAUSED
-PAUSED_STATUSES    = {WORK_STATUS_PAUSE, WORK_STATUS_REMOTE_CONTROL}
-# Statuses that map to LawnMowerActivity.ERROR
-ERROR_STATUSES     = {WORK_STATUS_ERROR, WORK_STATUS_EMERGENCY_STOP}
-
 # Friendly labels for work_status and robot_status sensors. Same enum
 # (PbRobotInfo.workStatus / .robotStatus), so one table covers both.
 WORK_STATUS_LABELS: dict[int, str] = {

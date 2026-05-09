@@ -2,7 +2,9 @@
 
 Home Assistant integration for the **Lymow One** robotic lawn mower.
 
-Communicates with the mower over AWS IoT MQTT (the same channel the official Lymow app uses), so it works over both Wifi and 4G.  Connects to  MQTT channel, listens for messages, sends commands.
+Communicates with the mower over AWS IoT MQTT (the same channel the official Lymow app uses), so it works over both Wifi and 4G.
+
+The integration is **strictly-passive** by design, just listens to messages sent by the mower. Message updates (battery level, time elapsed, percent complete, current zone, etc) occur roughly every 30-60 seconds during mowing, but much slower during charging (5-15 minutes)
 
 > **Status:** v0.1.0 — first release. Tested on Lymow One. **Lymow One Plus** is expected to work but is unverified — please open an issue if you have one.
 
@@ -58,7 +60,6 @@ The standard `Dock` action on the lawn_mower entity sends `RECHARGE_DOCK`, which
 ## Caveats
 
 - **Federated sign-in requires a manual paste step** every config flow / reauth. We tried to find a redirect URI that would let us auto-capture the code — Cognito only accepts `myapp://callback/` for this client, so manual paste is unavoidable.
-- The integration is **strictly-passive** by design, just listens to messages sent by the mower. Message updates (battery level, time elapsed, percent complete, current zone, etc) update roughly every 30-60 seconds during mowing, but much slower during charging (5-15 minutes)
 - The integration is independent from the upstream `d3dfantasy99/Lymow-HA` integration. **Uninstall that one first** before installing this — they share entity naming patterns at the device-registry level.
 
 ## Support

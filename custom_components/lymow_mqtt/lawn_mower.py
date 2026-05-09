@@ -19,7 +19,6 @@ from .const import (
     WORK_STATUS_ERROR,
     WORK_STATUS_ESCAPING,
     WORK_STATUS_MOWING,
-    WORK_STATUS_NONE,
     WORK_STATUS_PAUSE,
     WORK_STATUS_PAUSE_DOCKING,
     WORK_STATUS_RESUME,
@@ -53,11 +52,37 @@ class LymowMower(LymowEntity, LawnMowerEntity):
         super().__init__(coordinator, "mower")
 
     @property
-    def activity(self) -> LawnMowerActivity:
-        s = self.coordinator.state_dict.get("robotInfo")
-        if s is None:
+    def activity(self) -> LawnMowerActivity | None:
+        """Map (workStatus, robotStatus) to one of HA's 5 LawnMowerActivity buckets.
+
+        Priority order (first match wins):
+          1. robotStatus ∈ {ERROR, EMERGENCY_STOP}      → ERROR (physical fault overrides task intent)
+          2. robotStatus ∈ {CHARGING, CHARGING_FULL}    → DOCKED (physically at dock charging)
+          3. workStatus ∈ {PAUSE, PAUSE_DOCKING}        → PAUSED
+          4. workStatus ∈ {MOWING, RESUME, ZONE_PARTITION, ESCAPING}  → MOWING
+          5. workStatus = DOCKING                        → RETURNING
+          6. workStatus = WAITING                        → DOCKED
+          7. else (NONE, REMOTE_CONTROL, UPDATING, RTT) → None (Unknown)
+
+        Returning None gives HA's "Unknown" state for firmware states that
+        don't fit any of the 5 LawnMowerActivity buckets cleanly.
+        """
+        ri = self.coordinator.state_dict.get("robotInfo")
+        if ri is None:
+            return None
+        ws = ri.workStatus
+        rs = ri.robotStatus
+
+        # 1. Physical error states override task intent
+        if rs in (WORK_STATUS_ERROR, WORK_STATUS_EMERGENCY_STOP):
             return LawnMowerActivity.ERROR
-        ws = s.workStatus
+        # 2. Charging at dock — even if task intent is still "Docking" mid-recharge
+        if rs in (WORK_STATUS_CHARGING, WORK_STATUS_CHARGING_FULL):
+            return LawnMowerActivity.DOCKED
+        # 3. Paused (either variant)
+        if ws in (WORK_STATUS_PAUSE, WORK_STATUS_PAUSE_DOCKING):
+            return LawnMowerActivity.PAUSED
+        # 4. Active task states
         if ws in (
             WORK_STATUS_MOWING,
             WORK_STATUS_RESUME,
@@ -65,20 +90,14 @@ class LymowMower(LymowEntity, LawnMowerEntity):
             WORK_STATUS_ESCAPING,
         ):
             return LawnMowerActivity.MOWING
-        if ws in (WORK_STATUS_PAUSE, WORK_STATUS_PAUSE_DOCKING):
-            return LawnMowerActivity.PAUSED
+        # 5. Returning to dock
         if ws == WORK_STATUS_DOCKING:
             return LawnMowerActivity.RETURNING
-        if ws in (
-            WORK_STATUS_WAITING,
-            WORK_STATUS_CHARGING,
-            WORK_STATUS_CHARGING_FULL,
-            WORK_STATUS_NONE,
-        ):
+        # 6. Idle on dock not charging
+        if ws == WORK_STATUS_WAITING:
             return LawnMowerActivity.DOCKED
-        if ws in (WORK_STATUS_ERROR, WORK_STATUS_EMERGENCY_STOP):
-            return LawnMowerActivity.ERROR
-        return LawnMowerActivity.DOCKED  # fallback for unexpected states
+        # 7. Anything else (NONE, REMOTE_CONTROL, UPDATING, RTT) — show Unknown
+        return None
 
     async def async_start_mowing(self) -> None:
         """Start mow OR resume from paused, depending on current state."""
