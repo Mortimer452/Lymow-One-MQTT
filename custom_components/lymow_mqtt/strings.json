@@ -57,7 +57,7 @@
       "lte_signal": {"name": "LTE signal"},
       "firmware": {"name": "Firmware"},
       "ip_address": {"name": "IP address"},
-      "zone_size": {"name": "Zone size"},
+      "task_area": {"name": "Task area"},
       "total_mapped_area": {"name": "Total mapped area"},
       "cut_speed": {"name": "Cut speed"},
       "cut_height": {"name": "Cut height"},

@@ -165,7 +165,7 @@ def _ip_address(s):
     return s.get("rest_ip_address")
 
 
-def _zone_size(s):
+def _task_area(s):
     ci = s.get("cleanInfo")
     return ci.cleanArea if ci and ci.HasField("cleanArea") else None
 
@@ -386,14 +386,14 @@ DIAGNOSTIC_SENSORS: tuple[LymowSensorDesc, ...] = (
         value_fn=_ip_address,
     ),
     LymowSensorDesc(
-        key="zone_size",
-        translation_key="zone_size",
+        key="task_area",
+        translation_key="task_area",
         entity_category=EntityCategory.DIAGNOSTIC,
         device_class=SensorDeviceClass.AREA,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfArea.SQUARE_METERS,
         suggested_display_precision=0,
-        value_fn=_zone_size,
+        value_fn=_task_area,
     ),
     LymowSensorDesc(
         key="total_mapped_area",

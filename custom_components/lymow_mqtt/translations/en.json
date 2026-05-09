@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Region",
-        "description": "Select the AWS region your Lymow account is registered with.",
+        "description": "Account region - select the region closest to where you live.",
         "data": {"region": "Region"}
       },
       "auth_method": {
@@ -17,8 +17,8 @@
         "data": {"email": "Email", "password": "Password"}
       },
       "oauth": {
-        "title": "Federated sign-in (Google or Apple)",
-        "description": "**1.** [Click here to sign in]({oauth_url}). After signing in, your browser will fail to redirect to `myapp://callback/...` — that's expected.\n\n**2.** Copy the URL from your browser's address bar (it should start with `myapp://callback/?code=...`) and paste it below.\n\n**3.** If your address bar is blank after the redirect, open browser DevTools (F12) → Network tab → find the row for `callback` → right-click → Copy URL.",
+        "title": "Google or Apple account",
+        "description": "**1.** [Click here to sign in]({oauth_url}) and hit F12 to open your browser's dev tools. After signing in, your browser will fail to redirect to `myapp://callback/...` — that's expected.\n\n**2.** Copy the URL from your browser's address bar  or Network dev tools tab (it should start with `myapp://callback/?code=...`) and paste it below.\n\n**3.**",
         "data": {"oauth_code": "Pasted callback URL or code"}
       },
       "pick_device": {
@@ -57,7 +57,7 @@
       "lte_signal": {"name": "LTE signal"},
       "firmware": {"name": "Firmware"},
       "ip_address": {"name": "IP address"},
-      "zone_size": {"name": "Zone size"},
+      "task_area": {"name": "Task area"},
       "total_mapped_area": {"name": "Total mapped area"},
       "cut_speed": {"name": "Cut speed"},
       "cut_height": {"name": "Cut height"},
