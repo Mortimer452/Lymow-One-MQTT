@@ -14,11 +14,7 @@ from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import (
-    DOMAIN,
-    WORK_STATUS_EMERGENCY_STOP,
-    WORK_STATUS_ERROR,
-)
+from .const import DOMAIN
 from .coordinator import LymowCoordinator
 from .entity_base import LymowEntity
 
@@ -42,15 +38,12 @@ def _recharging(c: LymowCoordinator) -> bool:
     return bool(ri and ri.isRecharging)
 
 
-def _error_active(c: LymowCoordinator) -> bool:
-    ri = c.state_dict.get("robotInfo")
-    return bool(ri and ri.robotStatus == WORK_STATUS_ERROR)
-
-
-def _emergency_stop(c: LymowCoordinator) -> bool:
-    ri = c.state_dict.get("robotInfo")
-    return bool(ri and ri.robotStatus == WORK_STATUS_EMERGENCY_STOP)
-
+# Note: error_active and emergency_stop binary sensors were removed.
+# Both are trivial robotStatus int comparisons (==7 and ==13). Users can
+# build automations directly against `sensor.<mower>_robot_status` whose
+# state is a friendly string ("Error", "Emergency stop", etc.). The
+# lawn_mower entity's activity also flips to ERROR for both cases per
+# the priority matrix in lawn_mower.py.
 
 BINARY_SENSORS: tuple[LymowBinarySensorDesc, ...] = (
     LymowBinarySensorDesc(
@@ -71,18 +64,6 @@ BINARY_SENSORS: tuple[LymowBinarySensorDesc, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         icon="mdi:battery-charging-outline",
         value_fn=_recharging,
-    ),
-    LymowBinarySensorDesc(
-        key="error_active",
-        translation_key="error_active",
-        device_class=BinarySensorDeviceClass.PROBLEM,
-        value_fn=_error_active,
-    ),
-    LymowBinarySensorDesc(
-        key="emergency_stop",
-        translation_key="emergency_stop",
-        device_class=BinarySensorDeviceClass.PROBLEM,
-        value_fn=_emergency_stop,
     ),
 )
 

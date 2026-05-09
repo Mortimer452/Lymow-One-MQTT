@@ -70,9 +70,7 @@
     "binary_sensor": {
       "online": {"name": "Online"},
       "charging": {"name": "Charging"},
-      "recharging": {"name": "Recharging mid-task"},
-      "error_active": {"name": "Error"},
-      "emergency_stop": {"name": "Emergency stop"}
+      "recharging": {"name": "Recharging mid-task"}
     }
   }
 }
