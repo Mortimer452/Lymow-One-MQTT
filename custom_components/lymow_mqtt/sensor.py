@@ -454,6 +454,24 @@ class LymowSensor(LymowEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
+        # current_zone: expose the full zone catalog so users can discover
+        # zone names + hashIds without external tools. Used by the
+        # lymow_mqtt.start_zones service which accepts either form.
+        if self.entity_description.key == "current_zone":
+            catalog = self.coordinator.state_dict.get("zone_catalog")
+            if catalog is None or not catalog.zones:
+                return {"available_zones": []}
+            return {
+                "available_zones": [
+                    {
+                        "name": z.name,
+                        "hash_id": z.hash_id,
+                        "mow_order": z.mow_order,
+                        "is_enabled": z.is_enabled,
+                    }
+                    for z in catalog.zones
+                ],
+            }
         # warning_code: expose all_codes + label list
         if self.entity_description.key == "warning_code":
             codes = self.coordinator.state_dict.get("warningCodes") or []

@@ -235,6 +235,49 @@ def active_cut_config(state_dict: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def resolve_zones(catalog, inputs: list[str]) -> list[str]:
+    """Convert a list of zone names or hashIds into canonical hashIds.
+
+    For each input string:
+      - Empty/whitespace → silently skipped
+      - Matches a known hashId exactly → kept as-is
+      - Matches a known zone name (case-insensitive, whitespace-trimmed) → resolved
+      - Otherwise → raises ValueError listing known zones
+
+    Used by the lymow_mqtt.start_zones service handler so users can pass
+    friendly zone names instead of opaque firmware hashIds.
+
+    Raises ValueError on unknown input or when catalog is unavailable.
+    """
+    if catalog is None or not catalog.zones:
+        raise ValueError(
+            "Zone catalog not available yet — wait for the integration to "
+            "fetch zones from the mower (a few seconds after startup, "
+            "or fire a command to trigger a refresh)."
+        )
+
+    name_to_hash = {z.name.strip().lower(): z.hash_id for z in catalog.zones if z.name}
+    hashid_set = {z.hash_id for z in catalog.zones}
+
+    resolved: list[str] = []
+    for raw in inputs or []:
+        s = (raw or "").strip()
+        if not s:
+            continue
+        if s in hashid_set:
+            resolved.append(s)
+            continue
+        looked_up = name_to_hash.get(s.lower())
+        if looked_up is not None:
+            resolved.append(looked_up)
+            continue
+        known = sorted({z.name for z in catalog.zones if z.name})
+        raise ValueError(
+            f"Unknown zone: {raw!r}. Known zones: {', '.join(known)}"
+        )
+    return resolved
+
+
 def resolve_online(
     rest_online: bool,
     last_mqtt_at: datetime | None,

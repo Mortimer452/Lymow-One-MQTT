@@ -106,12 +106,23 @@ def _register_services(hass: HomeAssistant) -> None:
         return None
 
     async def _handle_start_zones(call: ServiceCall) -> None:
+        from homeassistant.exceptions import HomeAssistantError
+        from . import state as state_mod
         coord = _coord_for_device_id(call)
         if not coord:
             _LOGGER.warning("start_zones: no coordinator for device_id=%s", call.data.get("device_id"))
             return
-        zone_ids = call.data.get("zone_ids", [])
-        await coord.cmd_start(zone_hash_ids=zone_ids)
+        # Accept either friendly zone names or raw hashIds — both go through
+        # the resolver which checks the catalog and converts names to hashIds.
+        # Param name is "zones"; "zone_ids" is accepted for backwards-compat
+        # if any prior automation used the old name.
+        raw_zones = call.data.get("zones") or call.data.get("zone_ids") or []
+        catalog = coord.state_dict.get("zone_catalog")
+        try:
+            hash_ids = state_mod.resolve_zones(catalog, raw_zones)
+        except ValueError as e:
+            raise HomeAssistantError(str(e)) from e
+        await coord.cmd_start(zone_hash_ids=hash_ids)
 
     async def _handle_dock_cancel_task(call: ServiceCall) -> None:
         coord = _coord_for_device_id(call)

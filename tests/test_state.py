@@ -164,6 +164,59 @@ class TestActiveCutConfig:
 from datetime import UTC, datetime, timedelta
 
 
+class TestResolveZones:
+    def _catalog(self):
+        from lymow_mqtt.protocol import ZoneCatalog, ZoneInfo
+        c = ZoneCatalog()
+        for hash_id, name in [("XBYm6ijg", "Pool"), ("zCGt0Yy9", "Front yard"), ("AbCdEf12", "Red barn")]:
+            zi = ZoneInfo(hash_id=hash_id, name=name, mow_order=0, is_enabled=True, polygon_points=[])
+            c.zones.append(zi)
+            c.zones_by_hashid[hash_id] = zi
+        return c
+
+    def test_resolves_names_to_hashids(self):
+        c = self._catalog()
+        assert state.resolve_zones(c, ["Pool", "Front yard"]) == ["XBYm6ijg", "zCGt0Yy9"]
+
+    def test_passes_through_hashids(self):
+        c = self._catalog()
+        assert state.resolve_zones(c, ["XBYm6ijg", "AbCdEf12"]) == ["XBYm6ijg", "AbCdEf12"]
+
+    def test_mixed_names_and_hashids(self):
+        c = self._catalog()
+        assert state.resolve_zones(c, ["Pool", "AbCdEf12"]) == ["XBYm6ijg", "AbCdEf12"]
+
+    def test_case_insensitive_name_match(self):
+        c = self._catalog()
+        assert state.resolve_zones(c, ["pool", "FRONT YARD"]) == ["XBYm6ijg", "zCGt0Yy9"]
+
+    def test_strips_whitespace(self):
+        c = self._catalog()
+        assert state.resolve_zones(c, ["  Pool  "]) == ["XBYm6ijg"]
+
+    def test_skips_empty_strings(self):
+        c = self._catalog()
+        assert state.resolve_zones(c, ["Pool", "", "  "]) == ["XBYm6ijg"]
+
+    def test_empty_list_returns_empty(self):
+        c = self._catalog()
+        assert state.resolve_zones(c, []) == []
+
+    def test_unknown_name_raises_with_known_list(self):
+        c = self._catalog()
+        with pytest.raises(ValueError, match="Unknown zone"):
+            state.resolve_zones(c, ["Foo"])
+
+    def test_no_catalog_raises(self):
+        with pytest.raises(ValueError, match="catalog not available"):
+            state.resolve_zones(None, ["Pool"])
+
+    def test_empty_catalog_raises(self):
+        from lymow_mqtt.protocol import ZoneCatalog
+        with pytest.raises(ValueError, match="catalog not available"):
+            state.resolve_zones(ZoneCatalog(), ["Pool"])
+
+
 class TestResolveOnline:
     def _now(self) -> datetime:
         return datetime(2026, 5, 8, 12, 0, 0, tzinfo=UTC)

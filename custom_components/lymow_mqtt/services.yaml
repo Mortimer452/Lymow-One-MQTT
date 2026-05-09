@@ -9,14 +9,16 @@ start_zones:
       selector:
         device:
           integration: lymow_mqtt
-    zone_ids:
-      name: Zone hash IDs
+    zones:
+      name: Zones
       description: |
-        Ordered list of zone hashIds to mow. The mower will execute them
-        in order. Use the QUERY_MAP response or device diagnostics to
-        find zone hashIds.
+        Ordered list of zones to mow. Each entry can be either a zone
+        NAME (case-insensitive, as configured in the Lymow app — e.g.
+        "Pool", "Front yard") OR an 8-character hashId. The mower mows
+        them in the given order. Discover zone names by inspecting the
+        `available_zones` attribute on `sensor.<mower>_current_zone`.
       required: true
-      example: ["aaaa1111", "bbbb2222"]
+      example: ["Pool", "Front yard"]
       selector:
         object:
 
