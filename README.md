@@ -65,7 +65,7 @@ The standard `Dock` action on the lawn_mower entity behaves the same as tapping 
 ## Caveats
 
 - **Federated sign-in requires a manual paste step** every config flow / reauth. We tried to find a redirect URI that would let us auto-capture the code — Cognito only accepts `myapp://callback/` for this client, so manual paste is unavoidable.
-- The integration is independent from the upstream `d3dfantasy99/Lymow-HA` integration. **Uninstall that one first** before installing this — they share entity naming patterns at the device-registry level.
+- The integration is independent from the upstream `d3dfantasy99/Lymow-HA` integration, no name conflicts so you can run both at the same time if desired
 
 ## Known issues
 
