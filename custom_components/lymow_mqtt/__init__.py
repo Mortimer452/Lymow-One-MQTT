@@ -85,11 +85,22 @@ def _register_services(hass: HomeAssistant) -> None:
         return
 
     def _coord_for_device_id(call: ServiceCall) -> LymowCoordinator | None:
-        device_id = call.data.get("device_id")
+        # Modern HA convention: device targets arrive in call.target["device_id"].
+        # Fallback to call.data for backwards-compat or unusual call patterns.
+        device_id: str | None = None
+        target = getattr(call, "target", None) or {}
+        target_ids = target.get("device_id") if isinstance(target, dict) else None
+        if target_ids:
+            if isinstance(target_ids, str):
+                device_id = target_ids
+            elif isinstance(target_ids, (list, set, tuple)) and target_ids:
+                device_id = next(iter(target_ids))
         if not device_id:
-            return None
-        if isinstance(device_id, list):
-            device_id = device_id[0] if device_id else None
+            data_device = call.data.get("device_id")
+            if isinstance(data_device, str):
+                device_id = data_device
+            elif isinstance(data_device, list) and data_device:
+                device_id = data_device[0]
         if not device_id:
             return None
         device_reg = dr.async_get(hass)
@@ -99,7 +110,6 @@ def _register_services(hass: HomeAssistant) -> None:
         # The device's identifiers contain (DOMAIN, thing_name)
         for domain, thing_name in device.identifiers:
             if domain == DOMAIN:
-                # Find the coordinator for this thing_name
                 for coord in hass.data.get(DOMAIN, {}).values():
                     if getattr(coord, "thing_name", None) == thing_name:
                         return coord
@@ -110,8 +120,10 @@ def _register_services(hass: HomeAssistant) -> None:
         from . import state as state_mod
         coord = _coord_for_device_id(call)
         if not coord:
-            _LOGGER.warning("start_zones: no coordinator for device_id=%s", call.data.get("device_id"))
-            return
+            raise HomeAssistantError(
+                "No Lymow device targeted. Pick the mower in the Targets "
+                "section of the service call."
+            )
         # Accept either friendly zone names or raw hashIds — both go through
         # the resolver which checks the catalog and converts names to hashIds.
         raw_zones = call.data.get("zones", [])
@@ -132,28 +144,30 @@ def _register_services(hass: HomeAssistant) -> None:
         await coord.cmd_start(zone_hash_ids=hash_ids)
 
     async def _handle_dock_cancel_task(call: ServiceCall) -> None:
+        from homeassistant.exceptions import HomeAssistantError
         coord = _coord_for_device_id(call)
         if not coord:
-            _LOGGER.warning("dock_cancel_task: no coordinator for device_id=%s", call.data.get("device_id"))
-            return
+            raise HomeAssistantError("No Lymow device targeted.")
         await coord.cmd_dock_cancel_task()
 
     async def _handle_cancel_task(call: ServiceCall) -> None:
+        from homeassistant.exceptions import HomeAssistantError
         coord = _coord_for_device_id(call)
         if not coord:
-            _LOGGER.warning("cancel_task: no coordinator for device_id=%s", call.data.get("device_id"))
-            return
+            raise HomeAssistantError("No Lymow device targeted.")
         await coord.cmd_force_reinit()
 
+    # Schemas validate `call.data` only. The device_id arrives via call.target
+    # (per services.yaml `target:` block) and is read inside the handler via
+    # _coord_for_device_id. Schemas also accept device_id in data for
+    # backwards-compat with older call styles.
     hass.services.async_register(
         DOMAIN,
         "start_zones",
         _handle_start_zones,
-        # Accept zones as either a single string or a list of strings.
-        # Each entry can be a zone NAME (e.g. "Pool") or 8-char hashId.
         schema=vol.Schema(
             {
-                vol.Required("device_id"): vol.Any(str, [str]),
+                vol.Optional("device_id"): vol.Any(str, [str]),
                 vol.Required("zones"): vol.Any(str, [str]),
             }
         ),
@@ -162,11 +176,11 @@ def _register_services(hass: HomeAssistant) -> None:
         DOMAIN,
         "dock_cancel_task",
         _handle_dock_cancel_task,
-        schema=vol.Schema({vol.Required("device_id"): vol.Any(str, [str])}),
+        schema=vol.Schema({vol.Optional("device_id"): vol.Any(str, [str])}),
     )
     hass.services.async_register(
         DOMAIN,
         "cancel_task",
         _handle_cancel_task,
-        schema=vol.Schema({vol.Required("device_id"): vol.Any(str, [str])}),
+        schema=vol.Schema({vol.Optional("device_id"): vol.Any(str, [str])}),
     )

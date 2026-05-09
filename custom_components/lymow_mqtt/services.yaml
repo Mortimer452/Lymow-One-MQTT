@@ -1,14 +1,10 @@
 start_zones:
   name: Start zones
   description: Start mowing on a specified list of zones in the given order.
+  target:
+    device:
+      integration: lymow_mqtt
   fields:
-    device_id:
-      name: Device
-      description: The Lymow mower to command.
-      required: true
-      selector:
-        device:
-          integration: lymow_mqtt
     zones:
       name: Zones
       description: |
@@ -29,14 +25,9 @@ dock_cancel_task:
     task progress is reset and cannot be resumed.
     For preserve-task docking, use the standard Dock action on the
     lawn_mower entity, which sends RECHARGE_DOCK.
-  fields:
-    device_id:
-      name: Device
-      description: The Lymow mower to command.
-      required: true
-      selector:
-        device:
-          integration: lymow_mqtt
+  target:
+    device:
+      integration: lymow_mqtt
 
 cancel_task:
   name: Cancel task (force reinit)
@@ -44,11 +35,6 @@ cancel_task:
     Force the mower to reset to WAITING state. Stops in place — does NOT
     drive home. Use when stuck in error and the regular Pause/Resume
     can't recover.
-  fields:
-    device_id:
-      name: Device
-      description: The Lymow mower to command.
-      required: true
-      selector:
-        device:
-          integration: lymow_mqtt
+  target:
+    device:
+      integration: lymow_mqtt
