@@ -34,28 +34,27 @@ Copy `custom_components/lymow_mqtt/` into your HA config directory, restart HA, 
 
 ## Configuration
 
-The config flow walks you through:
+Prett self-explanatory, the config flow walks you through it:
 
-1. **Region** — Pick your AWS region, Lymow has four, just pick the one closest to you
+1. **Region** — Pick your AWS region, Lymow has four, your account is region-locked to one of them, just pick the one closest to you
 2. **Sign-in method:**
-   - **Email + password** (native account) — straightforward.
-   - **Sign in with Google or Apple** (OAuth) — Works, but very fiddley as Lymo's OAth config is locked down. Needs a one-time browser paste step. Click the link the integration shows you, **be sure to hit F12 to open browser dev tools**, sign in, and your browser will fail to redirect to `myapp://callback/...` — that's expected. Copy the URL from your address bar (but ONLY if it starts with myapp://) or find the failed redirect in your dev tools window and paste it back into HA.
+   - **Email + password** (Lymow account) — enter creds to login.
+   - **Sign in with Google or Apple** (OAuth) — Works, but very fiddley as Lymo's OAth config is locked down to a specific URL. Needs a one-time browser copy-paste step. Click the link the integration shows you, **be sure to hit F12 to open browser dev tools**, sign in, and your browser will fail to redirect to `myapp://callback/...` — that's expected. Copy the URL from your address bar (but ONLY if it starts with myapp://) or find the failed redirect to myapp:// in your dev tools window and paste it back into HA.
 3. **Mower** — pick which Lymow mower to add (one config entry per mower if you have multiple).
 
 ## RTSP camera
 
-The mower exposes its onboard camera as `rtsp://<mower-lan-ip>:10022/h264ESVideoTest`. The integration creates a `camera` entity using this URL automatically. **For the camera to work**:
+The mower exposes its onboard camera as `rtsp://<mower-lan-ip>:10022/h264ESVideoTest`. The integration creates a `camera` entity using this URL automatically. 
 
-- A **DHCP reservation** for the mower in your router is recommended — the integration will refresh `stream_source` if the IP changes, but a stable IP makes it more reliable.
-- HA needs **go2rtc** or **ffmpeg** to decode the stream (HA's default `stream` integration handles this).
+- A **DHCP reservation** for the mower in your router is recommended. Integration will refresh the stream source if the IP changes, but won't be instant. 
 
 ## Services
 
 - `lymow_mqtt.start_zones` — start a mow on a specified list of zone hashIds in order.
-- `lymow_mqtt.dock_cancel_task` — dock the mower **and abandon** the current task. Destructive.
+- `lymow_mqtt.dock_cancel_task` — dock the mower **and cancel** the current task.
 - `lymow_mqtt.cancel_task` — force-reinit the mower (stop in place, reset to waiting). Use when stuck in error.
 
-The standard `Dock` action on the lawn_mower entity sends `RECHARGE_DOCK`, which **preserves task progress** so you can resume later. 
+The standard `Dock` action on the lawn_mower entity behaves the same as tapping Dock and choosing to KEEP progress
 
 ## Caveats
 
