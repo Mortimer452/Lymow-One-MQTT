@@ -205,7 +205,8 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # state["robotConfig"] in place for any future consumers (rrConfig etc.).
 
         # cleanReport handling (arch.md §7d, spec §5.2)
-        if msg.cleanReport.ByteSize() > 0:
+        cleanreport_arrived = msg.cleanReport.ByteSize() > 0
+        if cleanreport_arrived:
             self._state["last_clean_report"] = msg.cleanReport
             self.hass.bus.async_fire(
                 f"{DOMAIN}_task_complete",
@@ -215,8 +216,9 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 },
             )
 
-        # Lazy catalog retry + workStatus-transition refresh
-        self._maybe_refire_query_map()
+        # Lazy catalog retry + workStatus-transition refresh + post-mow refresh
+        # (so zone renames done in the app during a mow get picked up after).
+        self._maybe_refire_query_map(cleanreport_arrived=cleanreport_arrived)
 
         # Notify watchdog waiters. We only set() here; the waiter does the
         # clear() before each await so a set() between predicate-check and
@@ -226,14 +228,18 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Notify HA entities
         self.async_set_updated_data(self._state)
 
-    def _maybe_refire_query_map(self) -> None:
-        """Fire another QUERY_MAP if the catalog still isn't complete OR
-        the mower just transitioned into MOWING.
+    def _maybe_refire_query_map(self, cleanreport_arrived: bool = False) -> None:
+        """Fire another QUERY_MAP under any of three conditions:
 
-        - Catalog incomplete = no zones OR no runtime_config attached.
-        - Retry budget = 5 fires, 60s apart minimum.
-        - workStatus 1->2 transition = always refire (resets the budget),
-          since the firmware is reliably awake at that moment.
+        1. Mower just transitioned into MOWING (workStatus 1 -> 2). Firmware
+           is reliably awake; good moment to grab a fresh catalog. Resets
+           the retry budget.
+        2. cleanReport just arrived (a mow finished). Picks up any zone
+           renames the user did in the app during the mow.
+        3. Catalog is incomplete (no zones OR no runtime_config) AND last
+           fire was >60s ago AND retry count <5 (lazy startup retry).
+
+        On a complete catalog with no transition / cleanReport, returns early.
         """
         from .const import WORK_STATUS_MOWING, WORK_STATUS_WAITING
 
@@ -252,19 +258,21 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             and catalog.runtime_config is not None
         )
 
-        if catalog_complete and not transitioned_to_mowing:
+        if catalog_complete and not transitioned_to_mowing and not cleanreport_arrived:
             return
 
         now = datetime.now(UTC)
         seconds_since_last = (now - self._last_catalog_query_at).total_seconds()
 
-        should_refire = transitioned_to_mowing or (
-            self._catalog_retry_count < 5 and seconds_since_last > 60
+        should_refire = (
+            transitioned_to_mowing
+            or cleanreport_arrived
+            or (self._catalog_retry_count < 5 and seconds_since_last > 60)
         )
         if not should_refire:
             return
 
-        if transitioned_to_mowing:
+        if transitioned_to_mowing or cleanreport_arrived:
             # Reset the retry budget on a real state event — the firmware
             # is freshly active and likely to send a complete catalog.
             self._catalog_retry_count = 0
@@ -273,9 +281,10 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self._last_catalog_query_at = now
         _LOGGER.debug(
-            "Refiring QUERY_MAP (retry=%s, transition=%s, complete=%s)",
+            "Refiring QUERY_MAP (retry=%s, transition=%s, cleanReport=%s, complete=%s)",
             self._catalog_retry_count,
             transitioned_to_mowing,
+            cleanreport_arrived,
             catalog_complete,
         )
         self.hass.async_create_task(
