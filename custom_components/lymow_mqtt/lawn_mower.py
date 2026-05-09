@@ -19,6 +19,7 @@ from .const import (
     WORK_STATUS_ERROR,
     WORK_STATUS_ESCAPING,
     WORK_STATUS_MOWING,
+    WORK_STATUS_NONE,
     WORK_STATUS_PAUSE,
     WORK_STATUS_PAUSE_DOCKING,
     WORK_STATUS_RESUME,
@@ -28,11 +29,14 @@ from .const import (
 from .coordinator import LymowCoordinator
 from .entity_base import LymowEntity
 
-_FEATURES = (
+# All possible features the entity can advertise. supported_features (below)
+# returns a subset of these depending on current state.
+_ALL_FEATURES = (
     LawnMowerEntityFeature.START_MOWING
     | LawnMowerEntityFeature.PAUSE
     | LawnMowerEntityFeature.DOCK
 )
+_NO_FEATURES = LawnMowerEntityFeature(0)
 
 
 async def async_setup_entry(
@@ -46,10 +50,68 @@ class LymowMower(LymowEntity, LawnMowerEntity):
     """Lymow robot mower entity."""
 
     _attr_name = None  # use device name
-    _attr_supported_features = _FEATURES
 
     def __init__(self, coordinator: LymowCoordinator) -> None:
         super().__init__(coordinator, "mower")
+
+    @property
+    def supported_features(self) -> LawnMowerEntityFeature:
+        """Show only the buttons that make sense for the current state.
+
+        Matrix:
+          - WAITING / NONE / CHARGING / CHARGING_FULL → Start (start fresh mow)
+          - MOWING / RESUME / ZONE_PARTITION / ESCAPING → Pause + Dock
+          - PAUSE                  → Start (resumes) + Dock
+          - DOCKING                → Pause (Dock would be redundant)
+          - PAUSE_DOCKING          → Start (resumes the dock approach)
+          - ERROR                  → Pause (also clears the error per arch.md §6b)
+          - EMERGENCY_STOP / UPDATING / RTT / REMOTE_CONTROL → no buttons
+            (mower is in a state where remote control isn't appropriate)
+
+        For destructive actions (cancel-task with stop-in-place, dock that
+        abandons task progress), use the dedicated services
+        lymow_mqtt.cancel_task and lymow_mqtt.dock_cancel_task.
+        """
+        ri = self.coordinator.state_dict.get("robotInfo")
+        if ri is None:
+            return _NO_FEATURES
+        ws = ri.workStatus
+        rs = ri.robotStatus
+
+        # Error state — only "Clear Error" via Pause
+        if rs == WORK_STATUS_ERROR or ws == WORK_STATUS_ERROR:
+            return LawnMowerEntityFeature.PAUSE
+        # Emergency stop / firmware update / factory test / remote control
+        # — hide all buttons; user must intervene physically or via service
+        if rs == WORK_STATUS_EMERGENCY_STOP or ws == WORK_STATUS_EMERGENCY_STOP:
+            return _NO_FEATURES
+        # Active task — pause or recall
+        if ws in (
+            WORK_STATUS_MOWING,
+            WORK_STATUS_RESUME,
+            WORK_STATUS_ZONE_PARTITION,
+            WORK_STATUS_ESCAPING,
+        ):
+            return LawnMowerEntityFeature.PAUSE | LawnMowerEntityFeature.DOCK
+        # Paused mid-mow — Start routes to resume, Dock sends home
+        if ws == WORK_STATUS_PAUSE:
+            return LawnMowerEntityFeature.START_MOWING | LawnMowerEntityFeature.DOCK
+        # Heading to dock — Dock would be redundant
+        if ws == WORK_STATUS_DOCKING:
+            return LawnMowerEntityFeature.PAUSE
+        # Paused while docking — Start routes to resume the dock approach
+        if ws == WORK_STATUS_PAUSE_DOCKING:
+            return LawnMowerEntityFeature.START_MOWING
+        # Idle / charging — only Start makes sense
+        if ws in (
+            WORK_STATUS_WAITING,
+            WORK_STATUS_NONE,
+            WORK_STATUS_CHARGING,
+            WORK_STATUS_CHARGING_FULL,
+        ):
+            return LawnMowerEntityFeature.START_MOWING
+        # Anything else (UPDATING, RTT, REMOTE_CONTROL) — hide buttons
+        return _NO_FEATURES
 
     @property
     def activity(self) -> LawnMowerActivity | None:
