@@ -1,4 +1,13 @@
-"""Lymow lawn_mower entity — start/pause/dock with smart variant dispatch."""
+"""Lymow lawn_mower entity — matrix-driven state, features, and dispatch.
+
+The (work_status, robot_status, is_recharging) → (activity, button-actions)
+decision lives in `state_matrix.STATE_MATRIX`. This file just wires HA's
+LawnMowerEntity API to that lookup.
+
+Why the matrix lives in its own module: it's pure data + a 10-line lookup
+function, importable by unit tests without HA stubs. Adding a new edge
+case is one row in `state_matrix.py`, no priority-cascade reasoning here.
+"""
 from __future__ import annotations
 
 from homeassistant.components.lawn_mower import (
@@ -10,33 +19,10 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import (
-    DOMAIN,
-    WORK_STATUS_CHARGING,
-    WORK_STATUS_CHARGING_FULL,
-    WORK_STATUS_DOCKING,
-    WORK_STATUS_EMERGENCY_STOP,
-    WORK_STATUS_ERROR,
-    WORK_STATUS_ESCAPING,
-    WORK_STATUS_MOWING,
-    WORK_STATUS_NONE,
-    WORK_STATUS_PAUSE,
-    WORK_STATUS_PAUSE_DOCKING,
-    WORK_STATUS_RESUME,
-    WORK_STATUS_WAITING,
-    WORK_STATUS_ZONE_PARTITION,
-)
+from . import state_matrix
+from .const import DOMAIN
 from .coordinator import LymowCoordinator
 from .entity_base import LymowEntity
-
-# All possible features the entity can advertise. supported_features (below)
-# returns a subset of these depending on current state.
-_ALL_FEATURES = (
-    LawnMowerEntityFeature.START_MOWING
-    | LawnMowerEntityFeature.PAUSE
-    | LawnMowerEntityFeature.DOCK
-)
-_NO_FEATURES = LawnMowerEntityFeature(0)
 
 
 async def async_setup_entry(
@@ -54,157 +40,41 @@ class LymowMower(LymowEntity, LawnMowerEntity):
     def __init__(self, coordinator: LymowCoordinator) -> None:
         super().__init__(coordinator, "mower")
 
-    @property
-    def supported_features(self) -> LawnMowerEntityFeature:
-        """Show only the buttons that make sense for the current state.
+    def _row(self) -> state_matrix.StateRow:
+        """Look up the current matrix row from the latest robotInfo.
 
-        Priority order matches `activity` above — robotStatus overrides
-        workStatus where they disagree about what the mower is physically
-        doing right now.
-
-          1. robotStatus ∈ {ERROR}                → Pause (clears error per arch.md §6b)
-          2. robotStatus ∈ {EMERGENCY_STOP}       → no buttons
-          3. robotStatus ∈ {CHARGING, CHARGING_FULL} → Start (fresh mow OR
-             resume saved task — async_start_mowing routes both correctly)
-          4. workStatus ∈ {MOWING, RESUME, ZONE_PARTITION, ESCAPING} → Pause + Dock
-          5. workStatus = PAUSE                    → Start (resume) + Dock
-          6. workStatus = DOCKING (and not yet on dock) → Pause
-          7. workStatus = PAUSE_DOCKING            → Start (resume dock approach)
-          8. workStatus = WAITING / NONE           → Start
-          9. else (UPDATING / RTT / REMOTE_CONTROL) → no buttons
-
-        For destructive actions (cancel-task with stop-in-place, dock that
-        abandons task progress), use the dedicated services
-        lymow_mqtt.cancel_task and lymow_mqtt.dock_cancel_task.
+        Returns DEFAULT_ROW if robotInfo isn't present yet (fresh integration
+        startup before any broadcast). DEFAULT_ROW has activity=None and no
+        actions, so HA renders "Unknown" with no buttons until state arrives.
         """
         ri = self.coordinator.state_dict.get("robotInfo")
         if ri is None:
-            return _NO_FEATURES
-        ws = ri.workStatus
-        rs = ri.robotStatus
-
-        # 1. Error state — only "Clear Error" via Pause
-        if rs == WORK_STATUS_ERROR or ws == WORK_STATUS_ERROR:
-            return LawnMowerEntityFeature.PAUSE
-        # 2. Emergency stop / firmware update / factory test / remote control
-        # — hide all buttons; user must intervene physically or via service
-        if rs == WORK_STATUS_EMERGENCY_STOP or ws == WORK_STATUS_EMERGENCY_STOP:
-            return _NO_FEATURES
-        # 3. Physically on dock charging (overrides workStatus intent).
-        # Includes both end-of-task charging and mid-task recharge dock.
-        # Only Start makes sense — async_start_mowing routes to resume if
-        # isRecharging=True (saved task), or fresh start otherwise.
-        if rs in (WORK_STATUS_CHARGING, WORK_STATUS_CHARGING_FULL):
-            return LawnMowerEntityFeature.START_MOWING
-        # 4. Active task — pause or recall
-        if ws in (
-            WORK_STATUS_MOWING,
-            WORK_STATUS_RESUME,
-            WORK_STATUS_ZONE_PARTITION,
-            WORK_STATUS_ESCAPING,
-        ):
-            return LawnMowerEntityFeature.PAUSE | LawnMowerEntityFeature.DOCK
-        # 5. Paused mid-mow — Start routes to resume, Dock sends home
-        if ws == WORK_STATUS_PAUSE:
-            return LawnMowerEntityFeature.START_MOWING | LawnMowerEntityFeature.DOCK
-        # 6. Heading to dock (still in transit, robotStatus not yet CHARGING)
-        # — Dock would be redundant
-        if ws == WORK_STATUS_DOCKING:
-            return LawnMowerEntityFeature.PAUSE
-        # 7. Paused while docking — Start routes to resume the dock approach
-        if ws == WORK_STATUS_PAUSE_DOCKING:
-            return LawnMowerEntityFeature.START_MOWING
-        # 8. Idle (workStatus says waiting/none and robotStatus didn't catch case 3)
-        if ws in (WORK_STATUS_WAITING, WORK_STATUS_NONE):
-            return LawnMowerEntityFeature.START_MOWING
-        # 9. Anything else (UPDATING, RTT, REMOTE_CONTROL) — hide buttons
-        return _NO_FEATURES
+            return state_matrix.DEFAULT_ROW
+        return state_matrix.lookup(
+            work_status=ri.workStatus,
+            robot_status=ri.robotStatus,
+            is_recharging=bool(getattr(ri, "isRecharging", False)),
+        )
 
     @property
     def activity(self) -> LawnMowerActivity | None:
-        """Map (workStatus, robotStatus) to one of HA's 5 LawnMowerActivity buckets.
+        val = self._row().activity
+        return LawnMowerActivity(val) if val is not None else None
 
-        Priority order (first match wins):
-          1. robotStatus ∈ {ERROR, EMERGENCY_STOP}      → ERROR (physical fault overrides task intent)
-          2. robotStatus ∈ {CHARGING, CHARGING_FULL}    → DOCKED (physically at dock charging)
-          3. workStatus ∈ {PAUSE, PAUSE_DOCKING}        → PAUSED
-          4. workStatus ∈ {MOWING, RESUME, ZONE_PARTITION, ESCAPING}  → MOWING
-          5. workStatus = DOCKING                        → RETURNING
-          6. workStatus = WAITING                        → DOCKED
-          7. else (NONE, REMOTE_CONTROL, UPDATING, RTT) → None (Unknown)
-
-        Returning None gives HA's "Unknown" state for firmware states that
-        don't fit any of the 5 LawnMowerActivity buckets cleanly.
-        """
-        ri = self.coordinator.state_dict.get("robotInfo")
-        if ri is None:
-            return None
-        ws = ri.workStatus
-        rs = ri.robotStatus
-
-        # 1. Physical error states override task intent
-        if rs in (WORK_STATUS_ERROR, WORK_STATUS_EMERGENCY_STOP):
-            return LawnMowerActivity.ERROR
-        # 2. Charging at dock — even if task intent is still "Docking" mid-recharge
-        if rs in (WORK_STATUS_CHARGING, WORK_STATUS_CHARGING_FULL):
-            return LawnMowerActivity.DOCKED
-        # 3. Paused (either variant)
-        if ws in (WORK_STATUS_PAUSE, WORK_STATUS_PAUSE_DOCKING):
-            return LawnMowerActivity.PAUSED
-        # 4. Active task states
-        if ws in (
-            WORK_STATUS_MOWING,
-            WORK_STATUS_RESUME,
-            WORK_STATUS_ZONE_PARTITION,
-            WORK_STATUS_ESCAPING,
-        ):
-            return LawnMowerActivity.MOWING
-        # 5. Returning to dock
-        if ws == WORK_STATUS_DOCKING:
-            return LawnMowerActivity.RETURNING
-        # 6. Idle on dock not charging
-        if ws == WORK_STATUS_WAITING:
-            return LawnMowerActivity.DOCKED
-        # 7. Anything else (NONE, REMOTE_CONTROL, UPDATING, RTT) — show Unknown
-        return None
+    @property
+    def supported_features(self) -> LawnMowerEntityFeature:
+        return state_matrix.features_for(self._row())
 
     async def async_start_mowing(self) -> None:
-        """Start mow OR resume, depending on current state.
-
-        Three resume cases dispatch to cmd_resume (which sends the right
-        firmware userCtrl variant — 4 or 22 — based on state):
-          1. Paused mid-mow (workStatus = PAUSE)
-          2. Paused mid-dock (workStatus = PAUSE_DOCKING)
-          3. Mid-task recharge dock with task saved (workStatus = CHARGING
-             or CHARGING_FULL AND isRecharging = True). Critical: without
-             this check, a "save progress" dock followed by Start in HA
-             would send USER_CTRL_CLEAN (1) which silently RESETS task
-             progress. The official app handles this case via Resume.
-
-        Otherwise (idle on dock, no saved task) → fresh start via cmd_start.
-        """
-        s = self.coordinator.state_dict.get("robotInfo")
-        if s is None:
-            await self.coordinator.cmd_start()
-            return
-        is_recharging = bool(getattr(s, "isRecharging", False))
-        is_paused = s.workStatus in (WORK_STATUS_PAUSE, WORK_STATUS_PAUSE_DOCKING)
-        is_saved_recharge = (
-            is_recharging
-            and s.workStatus in (WORK_STATUS_CHARGING, WORK_STATUS_CHARGING_FULL)
-        )
-        if is_paused or is_saved_recharge:
-            await self.coordinator.cmd_resume()
-        else:
-            await self.coordinator.cmd_start()
+        await self.coordinator.cmd_button_press("start_mowing")
 
     async def async_pause(self) -> None:
-        await self.coordinator.cmd_pause()
+        await self.coordinator.cmd_button_press("pause")
 
     async def async_dock(self) -> None:
-        """Dock and KEEP task progress.
+        """Dock and KEEP task progress (the safer default).
 
         Use the lymow_mqtt.dock_cancel_task service for the destructive
         variant that abandons the task.
         """
-        await self.coordinator.cmd_dock_recharge()
+        await self.coordinator.cmd_button_press("dock")
