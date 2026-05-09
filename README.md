@@ -11,11 +11,12 @@ Communicates with the mower over AWS IoT MQTT (the same channel the official Lym
 
 The integration is **strictly-passive** by design, just listens to messages sent by the mower. Message updates (battery level, time elapsed, percent complete, current zone, etc) occur roughly every 30-60 seconds during mowing, but much slower during charging (5-15 minutes)
 
-> **Status:** v0.1.0 — first release. Tested on Lymow One. **Lymow One Plus** is expected to work but is unverified — please open an issue if you have one.
+> **Status:** v0.2.0 — adds live GPS tracking on the HA map. Tested on Lymow One. **Lymow One Plus** is expected to work but is unverified — please open an issue if you have one.
 
 ## Features
 
 - **Lawn mower entity** with Start / Pause / Dock controls. 
+- **Device tracker integration** with live GPS coordinates showing the position of mower and RTK station in HA's map
 - **Live state sensors:** battery, work status, current zone (derived from mower position within map polygons), task progress, error messages.
 - **Multi-zone start service** for kicking off mows on a specific list of zones.
 - **Read-only schedule sensor** with the next upcoming run plus all schedules in attributes.
