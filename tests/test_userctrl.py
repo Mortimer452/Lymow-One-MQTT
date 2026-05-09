@@ -8,6 +8,7 @@ from lymow_mqtt.const import (
     USER_CTRL_PAUSE, USER_CTRL_PAUSE_DOCK, USER_CTRL_RESUME, USER_CTRL_RESUME_DOCK,
     USER_CTRL_DOCK, USER_CTRL_RECHARGE_DOCK, USER_CTRL_FORCE_REINIT,
     WORK_STATUS_MOWING, WORK_STATUS_PAUSE, WORK_STATUS_DOCKING, WORK_STATUS_PAUSE_DOCKING,
+    WORK_STATUS_CHARGING, WORK_STATUS_CHARGING_FULL, WORK_STATUS_WAITING,
 )
 
 
@@ -38,6 +39,31 @@ class TestPickResumeVariant:
     def test_resume_from_already_active_state_returns_none_noop(self):
         assert userctrl.pick_resume_variant(WORK_STATUS_MOWING) is None
         assert userctrl.pick_resume_variant(WORK_STATUS_DOCKING) is None
+
+    def test_resume_from_charging_with_recharge_flag_returns_4(self):
+        # Mid-task recharge dock: workStatus=CHARGING + isRecharging=True.
+        # Pressing Start should resume the saved task, not start fresh.
+        assert (
+            userctrl.pick_resume_variant(WORK_STATUS_CHARGING, is_recharging=True)
+            == USER_CTRL_RESUME
+        )
+        assert (
+            userctrl.pick_resume_variant(WORK_STATUS_CHARGING_FULL, is_recharging=True)
+            == USER_CTRL_RESUME
+        )
+
+    def test_resume_from_charging_without_recharge_flag_raises(self):
+        # Idle on dock charging, no saved task — there's nothing to resume.
+        # Caller should fall back to a fresh start.
+        with pytest.raises(ValueError):
+            userctrl.pick_resume_variant(WORK_STATUS_CHARGING, is_recharging=False)
+        with pytest.raises(ValueError):
+            userctrl.pick_resume_variant(WORK_STATUS_CHARGING_FULL, is_recharging=False)
+
+    def test_resume_from_waiting_raises(self):
+        # WAITING (1) is genuine idle — no task to resume.
+        with pytest.raises(ValueError):
+            userctrl.pick_resume_variant(WORK_STATUS_WAITING)
 
 
 class TestExpectedPostStates:

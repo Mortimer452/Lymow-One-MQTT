@@ -162,9 +162,31 @@ class LymowMower(LymowEntity, LawnMowerEntity):
         return None
 
     async def async_start_mowing(self) -> None:
-        """Start mow OR resume from paused, depending on current state."""
+        """Start mow OR resume, depending on current state.
+
+        Three resume cases dispatch to cmd_resume (which sends the right
+        firmware userCtrl variant — 4 or 22 — based on state):
+          1. Paused mid-mow (workStatus = PAUSE)
+          2. Paused mid-dock (workStatus = PAUSE_DOCKING)
+          3. Mid-task recharge dock with task saved (workStatus = CHARGING
+             or CHARGING_FULL AND isRecharging = True). Critical: without
+             this check, a "save progress" dock followed by Start in HA
+             would send USER_CTRL_CLEAN (1) which silently RESETS task
+             progress. The official app handles this case via Resume.
+
+        Otherwise (idle on dock, no saved task) → fresh start via cmd_start.
+        """
         s = self.coordinator.state_dict.get("robotInfo")
-        if s and s.workStatus in (WORK_STATUS_PAUSE, WORK_STATUS_PAUSE_DOCKING):
+        if s is None:
+            await self.coordinator.cmd_start()
+            return
+        is_recharging = bool(getattr(s, "isRecharging", False))
+        is_paused = s.workStatus in (WORK_STATUS_PAUSE, WORK_STATUS_PAUSE_DOCKING)
+        is_saved_recharge = (
+            is_recharging
+            and s.workStatus in (WORK_STATUS_CHARGING, WORK_STATUS_CHARGING_FULL)
+        )
+        if is_paused or is_saved_recharge:
             await self.coordinator.cmd_resume()
         else:
             await self.coordinator.cmd_start()

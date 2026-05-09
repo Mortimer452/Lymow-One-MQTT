@@ -17,7 +17,7 @@ from .const import (
     USER_CTRL_QUERY_RUN_TIME_CONFIG,
     WORK_STATUS_MOWING, WORK_STATUS_PAUSE, WORK_STATUS_DOCKING,
     WORK_STATUS_PAUSE_DOCKING, WORK_STATUS_RESUME,
-    WORK_STATUS_WAITING, WORK_STATUS_CHARGING,
+    WORK_STATUS_WAITING, WORK_STATUS_CHARGING, WORK_STATUS_CHARGING_FULL,
     WORK_STATUS_ZONE_PARTITION, WORK_STATUS_ESCAPING,
 )
 
@@ -43,19 +43,36 @@ def pick_pause_variant(work_status: int) -> int | None:
     )
 
 
-def pick_resume_variant(work_status: int) -> int | None:
+def pick_resume_variant(
+    work_status: int, is_recharging: bool = False
+) -> int | None:
     """Pick the right resume userCtrl from current work status.
 
-    Returns None if the mower isn't paused (no-op).
+    Three resume scenarios the firmware understands:
+      - PAUSE (3) → USER_CTRL_RESUME (4): paused mid-mow, resume mowing
+      - PAUSE_DOCKING (10) → USER_CTRL_RESUME_DOCK (22): paused mid-dock, resume dock
+      - CHARGING (5) / CHARGING_FULL (12) WITH is_recharging=True →
+        USER_CTRL_RESUME (4): mid-task recharge dock with task saved,
+        resume the mow. Per arch.md §6b, this is what the official app's
+        Resume button sends. Without checking is_recharging, sending
+        USER_CTRL_CLEAN (1) here would silently RESET the saved task
+        progress — see #2 in the bug history.
+
+    Returns None if the mower is already active (no-op).
+    Raises ValueError if the state doesn't support resuming.
     """
     if work_status == WORK_STATUS_PAUSE:
         return USER_CTRL_RESUME
     if work_status == WORK_STATUS_PAUSE_DOCKING:
         return USER_CTRL_RESUME_DOCK
+    # Charging on dock with a saved task → resume the saved task
+    if work_status in (WORK_STATUS_CHARGING, WORK_STATUS_CHARGING_FULL) and is_recharging:
+        return USER_CTRL_RESUME
     if work_status in (WORK_STATUS_MOWING, WORK_STATUS_DOCKING, WORK_STATUS_RESUME):
         return None
     raise ValueError(
-        f"Cannot resume from work_status={work_status} (not a paused state)"
+        f"Cannot resume from work_status={work_status} "
+        f"(not a paused state, and is_recharging={is_recharging})"
     )
 
 

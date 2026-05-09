@@ -427,12 +427,15 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ri = self._state.get("robotInfo")
         if ri is None:
             raise HomeAssistantError("No state — try again in a moment")
+        is_recharging = bool(getattr(ri, "isRecharging", False))
         try:
-            variant = userctrl.pick_resume_variant(ri.workStatus)
+            variant = userctrl.pick_resume_variant(
+                ri.workStatus, is_recharging=is_recharging
+            )
         except ValueError as e:
             raise HomeAssistantError(str(e)) from e
         if variant is None:
-            # Not paused — interpret as "start"
+            # Not paused / not mid-recharge — interpret as "start"
             await self.cmd_start()
             return
         await self._publish_userctrl(variant)
