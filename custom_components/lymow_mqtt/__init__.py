@@ -114,14 +114,21 @@ def _register_services(hass: HomeAssistant) -> None:
             return
         # Accept either friendly zone names or raw hashIds — both go through
         # the resolver which checks the catalog and converts names to hashIds.
-        # Param name is "zones"; "zone_ids" is accepted for backwards-compat
-        # if any prior automation used the old name.
-        raw_zones = call.data.get("zones") or call.data.get("zone_ids") or []
+        raw_zones = call.data.get("zones", [])
+        # Coerce a single string to a one-element list (HA's developer-tools
+        # YAML editor parses `zones: Pool` as a scalar, not a list).
+        if isinstance(raw_zones, str):
+            raw_zones = [raw_zones]
         catalog = coord.state_dict.get("zone_catalog")
         try:
             hash_ids = state_mod.resolve_zones(catalog, raw_zones)
         except ValueError as e:
             raise HomeAssistantError(str(e)) from e
+        if not hash_ids:
+            raise HomeAssistantError(
+                "No valid zones provided. Use the lawn_mower 'Start' button "
+                "to mow the default rotation."
+            )
         await coord.cmd_start(zone_hash_ids=hash_ids)
 
     async def _handle_dock_cancel_task(call: ServiceCall) -> None:
@@ -142,10 +149,12 @@ def _register_services(hass: HomeAssistant) -> None:
         DOMAIN,
         "start_zones",
         _handle_start_zones,
+        # Accept zones as either a single string or a list of strings.
+        # Each entry can be a zone NAME (e.g. "Pool") or 8-char hashId.
         schema=vol.Schema(
             {
                 vol.Required("device_id"): vol.Any(str, [str]),
-                vol.Required("zone_ids"): [str],
+                vol.Required("zones"): vol.Any(str, [str]),
             }
         ),
     )
