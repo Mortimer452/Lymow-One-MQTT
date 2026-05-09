@@ -62,6 +62,10 @@ The standard `Dock` action on the lawn_mower entity sends `RECHARGE_DOCK`, which
 - **Federated sign-in requires a manual paste step** every config flow / reauth. We tried to find a redirect URI that would let us auto-capture the code — Cognito only accepts `myapp://callback/` for this client, so manual paste is unavoidable.
 - The integration is independent from the upstream `d3dfantasy99/Lymow-HA` integration. **Uninstall that one first** before installing this — they share entity naming patterns at the device-registry level.
 
+## Known issues
+
+- **Cut height, cut speed, and move speed sensors update inconsistently.** Values may stay at "Unknown" or remain stale until the next time you start a mow or pause/resume. This is a trade-off of the strict-passive design and may be revisited in a future version.
+
 ## Support
 
 - Issues: https://github.com/Mortimer452/Lymow-One-MQTT/issues
