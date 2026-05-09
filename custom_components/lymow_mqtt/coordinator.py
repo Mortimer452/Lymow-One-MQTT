@@ -19,7 +19,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from . import protocol, state, userctrl
+from . import protocol, state, state_matrix, userctrl
 from .auth import CognitoAuth
 from .const import (
     API_ENDPOINTS,
@@ -29,7 +29,6 @@ from .const import (
     USER_CTRL_FORCE_REINIT,
     USER_CTRL_QUERY_MAP,
     USER_CTRL_QUERY_SCHEDULES,
-    USER_CTRL_RECHARGE_DOCK,
     WORK_STATUS_ERROR,
 )
 from .mqtt import MqttClient
@@ -408,59 +407,63 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if any_update:
                 return True
 
-    async def cmd_pause(self) -> None:
-        """User tapped Pause. Refresh state, pick variant, publish, watchdog."""
-        # Pre-flight QUERY_MAP for fresh state
+    async def cmd_button_press(self, button: str) -> None:
+        """User tapped Start / Pause / Dock — matrix-driven dispatch.
+
+        Pre-flight QUERY_MAP, look up the row for the fresh state, publish
+        whichever userCtrl that row designates for this button, then watchdog
+        the expected post-state. Replaces the old cmd_pause / cmd_resume /
+        cmd_dock_recharge methods — those decisions now live in
+        state_matrix.STATE_MATRIX.
+
+        button must be one of: "start_mowing", "pause", "dock".
+        """
+        if button not in ("start_mowing", "pause", "dock"):
+            raise ValueError(f"Unknown button: {button!r}")
+
+        # Pre-flight QUERY_MAP so we pick the variant from fresh state
         await self._publish_userctrl(USER_CTRL_QUERY_MAP, with_query_map_flag=True)
         await self._wait_for_state(set(), timeout=_QUERY_MAP_WAIT_SECONDS)
         ri = self._state.get("robotInfo")
         if ri is None:
             raise HomeAssistantError("No state — try again in a moment")
-        try:
-            variant = userctrl.pick_pause_variant(ri.workStatus)
-        except ValueError as e:
-            raise HomeAssistantError(str(e)) from e
-        if variant is None:
-            return  # already paused, no-op
-        await self._publish_userctrl(variant)
-        ok = await self._wait_for_state(
-            userctrl.EXPECTED_POST_STATES[variant],
-            timeout=_COMMAND_WATCHDOG_SECONDS,
+
+        row = state_matrix.lookup(
+            work_status=ri.workStatus,
+            robot_status=ri.robotStatus,
+            is_recharging=bool(getattr(ri, "isRecharging", False)),
         )
-        if not ok:
+        action = getattr(row, button)
+        if action is None:
             raise HomeAssistantError(
-                "Lymow ignored the command. Mower may be in a state that doesn't allow this."
+                f"Mower can't {button.replace('_', ' ')} from current state "
+                f"(work_status={ri.workStatus}, robot_status={ri.robotStatus}). "
+                f"State matrix says: {row.note or 'no action defined for this combo'}"
             )
 
-    async def cmd_resume(self) -> None:
-        await self._publish_userctrl(USER_CTRL_QUERY_MAP, with_query_map_flag=True)
-        await self._wait_for_state(set(), timeout=_QUERY_MAP_WAIT_SECONDS)
-        ri = self._state.get("robotInfo")
-        if ri is None:
-            raise HomeAssistantError("No state — try again in a moment")
-        is_recharging = bool(getattr(ri, "isRecharging", False))
-        try:
-            variant = userctrl.pick_resume_variant(
-                ri.workStatus, is_recharging=is_recharging
-            )
-        except ValueError as e:
-            raise HomeAssistantError(str(e)) from e
-        if variant is None:
-            # Not paused / not mid-recharge — interpret as "start"
-            await self.cmd_start()
-            return
-        await self._publish_userctrl(variant)
-        ok = await self._wait_for_state(
-            userctrl.EXPECTED_POST_STATES[variant],
-            timeout=_COMMAND_WATCHDOG_SECONDS,
-        )
+        await self._publish_userctrl(action)
+        expected = userctrl.EXPECTED_POST_STATES.get(action, set())
+        if not expected:
+            return  # nothing to watchdog for (e.g., query commands)
+        ok = await self._wait_for_state(expected, timeout=_COMMAND_WATCHDOG_SECONDS)
         if not ok:
             raise HomeAssistantError(
-                "Resume command not confirmed within watchdog window"
+                f"{button.replace('_', ' ').title()} command not confirmed "
+                f"within watchdog window"
             )
 
     async def cmd_start(self, zone_hash_ids: list[str] | None = None) -> None:
-        """Start fresh mow on default rotation, or on specific zones."""
+        """Start a fresh mow on a specific zone list — service path only.
+
+        The lawn_mower entity's Start button doesn't go through here; it
+        goes through cmd_button_press which routes via the matrix (and
+        for the WAITING-idle row, that ends up sending USER_CTRL_CLEAN
+        with no zones, equivalent to this method's default behavior).
+
+        This direct path exists because the lymow_mqtt.start_zones service
+        needs to pass the zone_hash_ids list to encode_start_zones, and
+        that's a different protobuf payload than a bare userCtrl.
+        """
         await self._publish_userctrl(
             USER_CTRL_CLEAN, zone_hash_ids=zone_hash_ids or []
         )
@@ -471,18 +474,6 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not ok:
             raise HomeAssistantError(
                 "Start command not confirmed within watchdog window"
-            )
-
-    async def cmd_dock_recharge(self) -> None:
-        """Dock + KEEP task progress (the safer default)."""
-        await self._publish_userctrl(USER_CTRL_RECHARGE_DOCK)
-        ok = await self._wait_for_state(
-            userctrl.EXPECTED_POST_STATES[USER_CTRL_RECHARGE_DOCK],
-            timeout=_COMMAND_WATCHDOG_SECONDS,
-        )
-        if not ok:
-            raise HomeAssistantError(
-                "Dock command not confirmed within watchdog window"
             )
 
     async def cmd_dock_cancel_task(self) -> None:

@@ -160,6 +160,28 @@ venv.bak/
 # Lymow OAuth tokens — NEVER commit
 tokens.json
 
+# R&E artifacts — these belong in the parent Lymow-One-HA/ workspace, not
+# inside the public integration repo. Per CLAUDE.md repo-boundary rule:
+# the harness, spike scripts, captures, decompiled APK output, protocol
+# notes, and tokens stay out of git so we don't increase abuse risk
+# against the live Lymow cloud. Belt-and-suspenders against accidental
+# `git add .` from the wrong directory.
+architecture.md
+harness.py
+harness_state.json
+harness_capture/
+spike_*.py
+test_lymow.py
+exchange_code.py
+extract_proto.py
+*_capture/
+passive_captures/
+lymow_extracted.proto
+lymow_extracted_pb2.py.bak
+base-extracted/
+xapk-extracted/
+lymow-src/
+
 # Spyder project settings
 .spyderproject
 .spyproject

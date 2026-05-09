@@ -1,7 +1,7 @@
 # Lymow One MQTT
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-[![GitHub release](https://img.shields.io/github/release/d3dfantasy99/Lymow-HA.svg)](https://github.com/Mortimer452/Lymow-One-MQTT/releases)
+[![GitHub release](https://img.shields.io/github/release/Mortimer452/Lymow-One-MQTT.svg)](https://github.com/Mortimer452/Lymow-One-MQTT/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-support-yellow?logo=buy-me-a-coffee)](https://buymeacoffee.com/mortimer452)
 
@@ -16,6 +16,7 @@ The integration is **strictly-passive** by design, just listens to messages sent
 ## Features
 
 - **Lawn mower entity** with Start / Pause / Dock controls. 
+- **Device tracker integration** with live GPS coordinates showing the position of mower and RTK station in HA's map
 - **Live state sensors:** battery, work status, current zone (derived from mower position within map polygons), task progress, error messages.
 - **Multi-zone start service** for kicking off mows on a specific list of zones.
 - **Read-only schedule sensor** with the next upcoming run plus all schedules in attributes.
@@ -64,7 +65,7 @@ The standard `Dock` action on the lawn_mower entity behaves the same as tapping 
 ## Caveats
 
 - **Federated sign-in requires a manual paste step** every config flow / reauth. We tried to find a redirect URI that would let us auto-capture the code — Cognito only accepts `myapp://callback/` for this client, so manual paste is unavoidable.
-- The integration is independent from the upstream `d3dfantasy99/Lymow-HA` integration. **Uninstall that one first** before installing this — they share entity naming patterns at the device-registry level.
+- The integration is independent from the upstream `d3dfantasy99/Lymow-HA` integration, no name conflicts so you can run both at the same time if desired
 
 ## Known issues
 
