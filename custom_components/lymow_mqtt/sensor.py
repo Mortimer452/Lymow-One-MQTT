@@ -31,7 +31,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import state as state_mod
-from .const import DOMAIN, WARNING_CODE_LABELS, error_label
+from .const import DOMAIN, WARNING_CODE_LABELS, error_label, work_status_label
 from .coordinator import LymowCoordinator
 from .entity_base import LymowEntity
 
@@ -54,12 +54,16 @@ def _battery(s):
 
 def _work_status(s):
     ri = s.get("robotInfo")
-    return ri.workStatus if ri else None
+    if ri is None:
+        return None
+    return work_status_label(ri.workStatus)
 
 
 def _robot_status(s):
     ri = s.get("robotInfo")
-    return ri.robotStatus if ri else None
+    if ri is None:
+        return None
+    return work_status_label(ri.robotStatus)
 
 
 def _current_zone(s):

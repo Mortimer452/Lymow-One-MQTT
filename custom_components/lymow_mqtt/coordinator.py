@@ -80,6 +80,17 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # layer can't distinguish "field absent" from "deliberately empty
         # list", so the recovery clear has to live here.
         self._prev_robot_status: int | None = None
+        # Track previous workStatus so we can refire QUERY_MAP on
+        # Waiting -> Mowing transitions when the catalog wasn't fully
+        # populated by the startup fire.
+        self._prev_work_status: int | None = None
+
+        # Lazy QUERY_MAP retry — the startup fire sometimes returns only
+        # the small state-echo half (no btMap catalog blob), leaving
+        # zone_catalog empty and runtime_config None. We refire occasionally
+        # until we have a complete catalog, capped to avoid unnecessary chatter.
+        self._catalog_retry_count: int = 0
+        self._last_catalog_query_at: datetime = datetime.now(UTC)
 
         # MQTT client (constructed in async_setup)
         self.mqtt: MqttClient | None = None
@@ -118,6 +129,7 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # the source we need; dropped to keep startup quiet.
         await self._publish_userctrl(USER_CTRL_QUERY_MAP, with_query_map_flag=True)
         await self._publish_userctrl(USER_CTRL_QUERY_SCHEDULES)
+        self._last_catalog_query_at = datetime.now(UTC)
 
         # Kick off the REST poll task
         self._rest_poll_task = self.hass.async_create_task(self._rest_poll_loop())
@@ -203,6 +215,9 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 },
             )
 
+        # Lazy catalog retry + workStatus-transition refresh
+        self._maybe_refire_query_map()
+
         # Notify watchdog waiters. We only set() here; the waiter does the
         # clear() before each await so a set() between predicate-check and
         # wait() can't be lost.
@@ -210,6 +225,62 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Notify HA entities
         self.async_set_updated_data(self._state)
+
+    def _maybe_refire_query_map(self) -> None:
+        """Fire another QUERY_MAP if the catalog still isn't complete OR
+        the mower just transitioned into MOWING.
+
+        - Catalog incomplete = no zones OR no runtime_config attached.
+        - Retry budget = 5 fires, 60s apart minimum.
+        - workStatus 1->2 transition = always refire (resets the budget),
+          since the firmware is reliably awake at that moment.
+        """
+        from .const import WORK_STATUS_MOWING, WORK_STATUS_WAITING
+
+        ri = self._state.get("robotInfo")
+        new_work_status = getattr(ri, "workStatus", None) if ri is not None else None
+        transitioned_to_mowing = (
+            self._prev_work_status == WORK_STATUS_WAITING
+            and new_work_status == WORK_STATUS_MOWING
+        )
+        self._prev_work_status = new_work_status
+
+        catalog = self._state.get("zone_catalog")
+        catalog_complete = (
+            catalog is not None
+            and len(catalog.zones) > 0
+            and catalog.runtime_config is not None
+        )
+
+        if catalog_complete and not transitioned_to_mowing:
+            return
+
+        now = datetime.now(UTC)
+        seconds_since_last = (now - self._last_catalog_query_at).total_seconds()
+
+        should_refire = transitioned_to_mowing or (
+            self._catalog_retry_count < 5 and seconds_since_last > 60
+        )
+        if not should_refire:
+            return
+
+        if transitioned_to_mowing:
+            # Reset the retry budget on a real state event — the firmware
+            # is freshly active and likely to send a complete catalog.
+            self._catalog_retry_count = 0
+        else:
+            self._catalog_retry_count += 1
+
+        self._last_catalog_query_at = now
+        _LOGGER.debug(
+            "Refiring QUERY_MAP (retry=%s, transition=%s, complete=%s)",
+            self._catalog_retry_count,
+            transitioned_to_mowing,
+            catalog_complete,
+        )
+        self.hass.async_create_task(
+            self._publish_userctrl(USER_CTRL_QUERY_MAP, with_query_map_flag=True)
+        )
 
     def _handle_notify_app(self, payload: dict) -> None:
         """JSON {deviceThingName, robotState: online|offline}."""

@@ -116,6 +116,34 @@ PAUSED_STATUSES    = {WORK_STATUS_PAUSE, WORK_STATUS_REMOTE_CONTROL}
 # Statuses that map to LawnMowerActivity.ERROR
 ERROR_STATUSES     = {WORK_STATUS_ERROR, WORK_STATUS_EMERGENCY_STOP}
 
+# Friendly labels for work_status and robot_status sensors. Same enum
+# (PbRobotInfo.workStatus / .robotStatus), so one table covers both.
+WORK_STATUS_LABELS: dict[int, str] = {
+    WORK_STATUS_NONE:           "Idle",
+    WORK_STATUS_WAITING:        "Waiting",
+    WORK_STATUS_MOWING:         "Mowing",
+    WORK_STATUS_PAUSE:          "Paused",
+    WORK_STATUS_DOCKING:        "Docking",
+    WORK_STATUS_CHARGING:       "Charging",
+    WORK_STATUS_REMOTE_CONTROL: "Remote control",
+    WORK_STATUS_ERROR:          "Error",
+    WORK_STATUS_RESUME:         "Resuming",
+    WORK_STATUS_ZONE_PARTITION: "Zone partition",
+    WORK_STATUS_PAUSE_DOCKING:  "Paused (docking)",
+    WORK_STATUS_UPDATING:       "Updating firmware",
+    WORK_STATUS_CHARGING_FULL:  "Fully charged",
+    WORK_STATUS_EMERGENCY_STOP: "Emergency stop",
+    WORK_STATUS_ESCAPING:       "Escaping",
+    WORK_STATUS_RTT:            "Factory test",
+    WORK_STATUS_OFFLINE:        "Offline",
+}
+
+
+def work_status_label(value: int) -> str:
+    """Friendly label for a work_status / robot_status int. Falls back to
+    'Status N' if a future firmware introduces an unknown value."""
+    return WORK_STATUS_LABELS.get(value, f"Status {value}")
+
 # ─────────────────────────────────────────────────────────────
 # RtkStatus enum — rtkStatus is an INTEGER
 # ─────────────────────────────────────────────────────────────

@@ -43,40 +43,64 @@ def point_in_polygon(x: float, y: float, polygon: list[tuple[float, float]]) -> 
 def merge_pboutput(state_dict: dict[str, Any], msg) -> None:
     """Merge populated submessages from a PbOutput into the state dict.
 
-    Only fields present in the message are touched. Submessages are
-    fully replaced (the firmware sends complete substructures, not
-    deltas). Repeated fields (errorCodes, warningCodes) are replaced
-    when the field is populated, left untouched otherwise — the
-    coordinator clears them based on robotStatus transitions, since
-    protobuf can't distinguish "absent field" from "empty list" reliably.
+    For "sticky" submessages (cleanInfo, deviceInfo, robotConfig, etc.) we
+    use protobuf MergeFrom so a broadcast that updates one field doesn't
+    clobber others that weren't sent. Example: cleanInfo.mapArea is only
+    populated occasionally; a broadcast carrying just cleanArea would
+    otherwise wipe our cached mapArea. MergeFrom preserves it.
+
+    For "snapshot" submessages (robotInfo, pose, localizationInfo,
+    wifiConfigRes) we replace — the firmware sends a full snapshot
+    every broadcast.
+
+    Repeated fields (errorCodes, warningCodes) are replaced when the
+    field is populated, left untouched otherwise. The coordinator
+    explicitly clears errorCodes on robotStatus 7->non-7 transition.
     """
-    # Iterate fields actually populated in the message
     populated_names = {fd.name for fd, _ in msg.ListFields()}
 
+    # Snapshot submessages — full replace each broadcast
     if "robotInfo" in populated_names:
         state_dict["robotInfo"] = msg.robotInfo
-    if "cleanInfo" in populated_names:
-        state_dict["cleanInfo"] = msg.cleanInfo
     if "pose" in populated_names:
         state_dict["pose"] = msg.pose
     if "localizationInfo" in populated_names:
         state_dict["localizationInfo"] = msg.localizationInfo
+    if "wifiConfigRes" in populated_names:
+        state_dict["wifiConfigRes"] = msg.wifiConfigRes
+
+    # Sticky submessages — merge so unset fields preserve previous values
+    def _merge_sticky(name: str, source) -> None:
+        existing = state_dict.get(name)
+        if existing is None:
+            # First time we see this submessage — clone it so we don't
+            # alias the inbound message (which the caller may discard).
+            cloned = source.__class__()
+            cloned.CopyFrom(source)
+            state_dict[name] = cloned
+        else:
+            existing.MergeFrom(source)
+
+    if "cleanInfo" in populated_names:
+        _merge_sticky("cleanInfo", msg.cleanInfo)
     if "deviceInfo" in populated_names:
-        state_dict["deviceInfo"] = msg.deviceInfo
+        _merge_sticky("deviceInfo", msg.deviceInfo)
     if "btMap" in populated_names:
+        # btMap is query-driven; the catalog blob is a one-shot reply.
+        # Replace rather than merge — repeated fields would accumulate.
         state_dict["btMap"] = msg.btMap
     if "cleanReport" in populated_names:
         state_dict["cleanReport"] = msg.cleanReport
     if "schedule" in populated_names:
+        # Replace — the schedules list comes back whole on QUERY_SCHEDULES,
+        # we don't want to accumulate stale tasks.
         state_dict["schedule"] = msg.schedule
     if "robotConfig" in populated_names:
-        state_dict["robotConfig"] = msg.robotConfig
+        _merge_sticky("robotConfig", msg.robotConfig)
     if "debugSetting" in populated_names:
-        state_dict["debugSetting"] = msg.debugSetting
-    if "wifiConfigRes" in populated_names:
-        state_dict["wifiConfigRes"] = msg.wifiConfigRes
+        _merge_sticky("debugSetting", msg.debugSetting)
     if "netDetailInfo" in populated_names:
-        state_dict["netDetailInfo"] = msg.netDetailInfo
+        _merge_sticky("netDetailInfo", msg.netDetailInfo)
     if "chargingStationLoc" in populated_names:
         state_dict["chargingStationLoc"] = msg.chargingStationLoc
 
