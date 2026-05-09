@@ -7,9 +7,33 @@ just provides the merge and derivation logic.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from math import cos, radians
 from typing import Any
 
 from .const import ACTIVE_TASK_WORK_STATUSES
+
+
+def enu_to_lla(ebp, pose) -> tuple[float, float] | None:
+    """Convert a local ENU-frame pose to GPS lat/lon using the RTK base anchor.
+
+    Flat-earth approximation, accurate to a few cm at residential lawn scale
+    (< ~1 km from the anchor). For higher precision, do a proper ENU→ECEF→LLA
+    transform — not needed for this use case. See arch.md §8c.
+
+    `ebp` is a PbRobotLLACoords (latitude/longitude/altitude floats). `pose`
+    is a PbPose (x = meters east, y = meters north, both relative to the
+    RTK base station). Returns None if either input is missing or malformed.
+    """
+    if ebp is None or pose is None:
+        return None
+    if not (hasattr(pose, "x") and hasattr(pose, "y")):
+        return None
+    if not (hasattr(ebp, "latitude") and hasattr(ebp, "longitude")):
+        return None
+    base_lat = ebp.latitude
+    lat = base_lat + (pose.y / 111111.0)
+    lon = ebp.longitude + (pose.x / (111111.0 * cos(radians(base_lat))))
+    return (lat, lon)
 
 
 def point_in_polygon(x: float, y: float, polygon: list[tuple[float, float]]) -> bool:
