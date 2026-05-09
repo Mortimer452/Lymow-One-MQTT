@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import ssl
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -86,7 +87,11 @@ class MqttClient:
             transport="websockets",
             callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
         )
-        cli.tls_set()
+        # paho's tls_set() reads default CA certs from disk synchronously,
+        # which HA's event loop blocking-call detector flags. Build the SSL
+        # context in an executor and attach via tls_set_context (non-blocking).
+        ssl_ctx = await self._loop.run_in_executor(None, ssl.create_default_context)
+        cli.tls_set_context(ssl_ctx)
         cli.ws_set_options(path=ws_path, headers={"Host": self._host})
 
         cli.on_connect = self._on_connect
@@ -153,13 +158,15 @@ class MqttClient:
         # Don't signal connected yet — wait for SUBACK in _on_subscribe.
 
     def _on_subscribe(self, client, userdata, mid, granted_qos, properties=None):
-        # paho V2 callback shape — granted_qos is a list of ReasonCode objects.
-        # ReasonCode 0..2 = success at QoS 0/1/2; 0x80+ = failure.
-        rejected = [int(rc) for rc in granted_qos if int(rc) >= 0x80]
+        # paho V2 passes ReasonCode objects, not ints. Use .is_failure
+        # (True for codes >= 0x80) and .value for logging.
+        rejected = [rc.value for rc in granted_qos if rc.is_failure]
         if rejected:
             _LOGGER.error("MQTT subscribe rejected: %s", rejected)
             return  # Don't set _connected — caller's wait_for will time out
-        _LOGGER.debug("MQTT subscribed mid=%s qos=%s", mid, list(granted_qos))
+        _LOGGER.debug(
+            "MQTT subscribed mid=%s codes=%s", mid, [rc.value for rc in granted_qos]
+        )
         if self._loop:
             self._loop.call_soon_threadsafe(self._connected.set)
 
