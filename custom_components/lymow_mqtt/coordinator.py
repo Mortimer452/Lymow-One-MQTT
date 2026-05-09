@@ -187,7 +187,18 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Cache parsed zone catalog whenever a btMap-bearing message arrives
         if msg.btMap.ByteSize() > 200:
             try:
-                self._state["zone_catalog"] = protocol.parse_zone_catalog(msg.btMap)
+                new_catalog = protocol.parse_zone_catalog(msg.btMap)
+                self._state["zone_catalog"] = new_catalog
+                # Promote enu_base_point to its own sticky state slot —
+                # only update when the new catalog actually carries it.
+                # QUERY_PATH responses share this branch but parse to an
+                # empty catalog (no PbMap structure); without this conditional
+                # we'd lose the dock-anchor every time the user opens the
+                # app and triggers QUERY_PATH bursts. See arch.md §8c +
+                # `project_btmap_sticky_fields` memory.
+                ebp = getattr(new_catalog, "enu_base_point", None)
+                if ebp is not None:
+                    self._state["enu_base_point"] = ebp
             except Exception:
                 _LOGGER.exception("Failed to parse zone catalog")
 

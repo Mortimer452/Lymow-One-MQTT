@@ -239,3 +239,87 @@ class TestResolveOnline:
     def test_rest_offline_old_mqtt_returns_offline(self):
         old = self._now() - timedelta(minutes=10)
         assert state.resolve_online(rest_online=False, last_mqtt_at=old, now=self._now()) is False
+
+
+class TestEnuToLla:
+    """Verifies enu_base_point + pose → GPS lat/lon math (arch.md §8c)."""
+
+    def _ebp(self, lat=37.6390347, lon=-97.4817202, alt=350.0):
+        import lymow_extracted_pb2 as pb
+        e = pb.PbRobotLLACoords()
+        e.latitude = lat
+        e.longitude = lon
+        e.altitude = alt
+        return e
+
+    def _pose(self, x=0.0, y=0.0):
+        import lymow_extracted_pb2 as pb
+        p = pb.PbPose()
+        p.x = x
+        p.y = y
+        return p
+
+    # Note: PbRobotLLACoords stores latitude/longitude as float (32-bit),
+    # so values round-trip with ~7 significant digits of precision. We use
+    # 1e-5 absolute tolerance (~1m at this latitude) — well above float32
+    # rounding noise, well below RTK accuracy bounds.
+
+    def test_zero_pose_equals_base_point(self):
+        """At the RTK base origin (pose 0,0), GPS = enuBasePoint."""
+        result = state.enu_to_lla(self._ebp(), self._pose(0, 0))
+        assert result is not None
+        lat, lon = result
+        assert lat == pytest.approx(37.6390347, abs=1e-5)
+        assert lon == pytest.approx(-97.4817202, abs=1e-5)
+
+    def test_pose_y_increases_latitude(self):
+        """Pose y is meters north — pushes latitude positive."""
+        # 100 meters north → ~0.0009 degrees latitude
+        ebp = self._ebp(lat=40.0, lon=-100.0)
+        result = state.enu_to_lla(ebp, self._pose(x=0.0, y=100.0))
+        assert result is not None
+        lat, lon = result
+        # 1 degree latitude ≈ 111111 m, so 100m → 100/111111 = 0.0009 degrees
+        assert lat == pytest.approx(40.0 + (100.0 / 111111.0), abs=1e-5)
+        # Longitude unchanged (pose.x=0)
+        assert lon == pytest.approx(-100.0, abs=1e-5)
+
+    def test_pose_x_increases_longitude(self):
+        """Pose x is meters east — pushes longitude positive."""
+        # 100 meters east at lat=0 (cos=1) → 100/111111 ≈ 0.0009 degrees lon
+        ebp = self._ebp(lat=0.0, lon=0.0)
+        result = state.enu_to_lla(ebp, self._pose(x=100.0, y=0.0))
+        assert result is not None
+        lat, lon = result
+        assert lat == pytest.approx(0.0, abs=1e-5)
+        assert lon == pytest.approx(100.0 / 111111.0, abs=1e-5)
+
+    def test_longitude_scales_by_cosine_of_latitude(self):
+        """At higher latitudes, the same x-offset yields larger longitude
+        delta because longitude lines converge near the poles."""
+        # 100m east at lat=60° (cos ≈ 0.5) → 2x the longitude delta of equator
+        ebp = self._ebp(lat=60.0, lon=0.0)
+        result = state.enu_to_lla(ebp, self._pose(x=100.0, y=0.0))
+        assert result is not None
+        _, lon = result
+        # Expected: 100 / (111111 * cos(60°)) ≈ 100 / (111111 * 0.5) ≈ 2x equator
+        from math import cos, radians
+        expected = 100.0 / (111111.0 * cos(radians(60.0)))
+        assert lon == pytest.approx(expected, abs=1e-5)
+
+    def test_returns_none_when_ebp_missing(self):
+        assert state.enu_to_lla(None, self._pose(1, 1)) is None
+
+    def test_returns_none_when_pose_missing(self):
+        assert state.enu_to_lla(self._ebp(), None) is None
+
+    def test_returns_none_when_pose_lacks_xy(self):
+        """Object without x/y attributes shouldn't crash — returns None."""
+        class FakePose:
+            pass
+        assert state.enu_to_lla(self._ebp(), FakePose()) is None
+
+    def test_returns_none_when_ebp_lacks_lat_lon(self):
+        class FakeEbp:
+            pass
+        assert state.enu_to_lla(FakeEbp(), self._pose(1, 1)) is None

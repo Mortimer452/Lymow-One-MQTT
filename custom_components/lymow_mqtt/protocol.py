@@ -259,6 +259,11 @@ class ZoneCatalog:
     # moveSpeed) — the harness reads from this field at parse_btmap_payload
     # (harness.py:1064-1079).
     runtime_config: object | None = None
+    # PbMap.enuBasePoint (field 7) — surveyed RTK base GPS, anchor of the
+    # local ENU frame. Set during initial RTK base survey; the dock is a
+    # separate physical unit. Used by the GPS device_tracker entities to
+    # convert pose (local meters) into live mower lat/lon. See arch.md §8c.
+    enu_base_point: object | None = None
 
 
 def parse_zone_catalog(bt_map) -> ZoneCatalog:
@@ -379,6 +384,19 @@ def parse_zone_catalog(bt_map) -> ZoneCatalog:
             catalog.runtime_config = rtc
         except Exception:
             catalog.runtime_config = None
+
+    # Inner.field_7: PbRobotLLACoords — RTK base station GPS anchor of the
+    # local ENU frame (arch.md §8c). Sticky once captured; the coordinator
+    # promotes this to its own state slot so it survives QUERY_PATH responses
+    # which arrive in the same btMap branch but carry no PbMap structure.
+    if 7 in inner:
+        try:
+            ebp_bytes = inner[7][0][1]
+            ebp = pb.PbRobotLLACoords()
+            ebp.ParseFromString(ebp_bytes)
+            catalog.enu_base_point = ebp
+        except Exception:
+            catalog.enu_base_point = None
 
     return catalog
 

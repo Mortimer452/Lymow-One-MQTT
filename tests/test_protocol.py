@@ -130,6 +130,69 @@ class TestZoneCatalogParser:
         looked_up = catalog.zones_by_hashid.get(first_zone.hash_id)
         assert looked_up is first_zone
 
+    def test_enu_base_point_extracted_from_synthetic_pbmap(self):
+        """parse_zone_catalog reads PbMap.enuBasePoint (field 7) when present.
+
+        The committed fixture is a small btMap without enuBasePoint, so we
+        build a minimal PbBtMap → queryAck → PbMap synthetic to exercise
+        the parser path. Mirrors the harness's empirical finding that the
+        RTK base GPS lives inside the QUERY_MAP catalog.
+        """
+        import lymow_extracted_pb2 as pb
+
+        # Build a real PbMap with just enuBasePoint and runtime_config set.
+        pbmap = pb.PbMap()
+        pbmap.enuBasePoint.latitude = 37.6390347
+        pbmap.enuBasePoint.longitude = -97.4817202
+        pbmap.enuBasePoint.altitude = 350.5
+        inner_bytes = pbmap.SerializeToString()
+
+        # Wrap in a queryAck (PbBtMap.queryAck = field 2, field 3 = inner bytes)
+        # since parse_zone_catalog walks btMap → queryAck (field 2) → field 3.
+        # Build minimal raw protobuf bytes for the wrapper.
+        # Tag for field 3 (length-delimited) = (3 << 3) | 2 = 0x1A.
+        from lymow_mqtt.protocol import _wire_varint  # noqa: F401  (just to confirm import)
+        ln = len(inner_bytes)
+        # Encode varint length manually (assumes <128 bytes is ok for tiny inner)
+        def _varint(n):
+            out = bytearray()
+            while n > 0x7F:
+                out.append((n & 0x7F) | 0x80)
+                n >>= 7
+            out.append(n & 0x7F)
+            return bytes(out)
+        qa_bytes = bytes([0x1A]) + _varint(ln) + inner_bytes
+
+        # Build the outer PbBtMap with queryAck (field 2)
+        btmap = pb.PbBtMap()
+        # field 2 of PbBtMap is queryAck — we don't have its proto defined,
+        # so reach in via raw serialize-merge: assemble a PbBtMap by parsing
+        # a hand-rolled message that has field 2 = qa_bytes.
+        # Tag for field 2 (length-delimited) = (2 << 3) | 2 = 0x12.
+        outer_raw = bytes([0x12]) + _varint(len(qa_bytes)) + qa_bytes
+        btmap.MergeFromString(outer_raw)
+
+        catalog = protocol.parse_zone_catalog(btmap)
+        assert catalog.enu_base_point is not None
+        assert abs(catalog.enu_base_point.latitude - 37.6390347) < 1e-5
+        assert abs(catalog.enu_base_point.longitude - (-97.4817202)) < 1e-5
+        assert abs(catalog.enu_base_point.altitude - 350.5) < 1e-2
+
+    def test_enu_base_point_none_when_pbmap_lacks_field(self):
+        """Parser returns enu_base_point=None when the catalog has no field 7.
+
+        This is the QUERY_PATH case — small btMap responses with path data
+        only, no PbMap structure. The integration's coordinator depends on
+        this signal to skip the sticky-state lift and preserve the prior
+        enu_base_point across burst-mode QUERY_PATH bombardment.
+        """
+        envelope = load_fixture("query_map_response.bin")
+        msg = protocol.decode_pboutput_envelope(envelope)
+        catalog = protocol.parse_zone_catalog(msg.btMap)
+        # Current fixture is small/sanitized and lacks enuBasePoint. If a
+        # future fixture grows to include it, change this to skip-on-present.
+        assert catalog.enu_base_point is None
+
 
 class TestScheduleDecoder:
     def test_decode_schedule_fixture(self):
