@@ -36,6 +36,25 @@ def enu_to_lla(ebp, pose) -> tuple[float, float] | None:
     return (lat, lon)
 
 
+def polygon_area(polygon: list[tuple[float, float]]) -> float:
+    """Compute the area of a 2D polygon using the shoelace formula.
+
+    Polygon points are local-frame meters (the same x/y coordinate space
+    that the mower's pose lives in), so the result is square meters.
+    Handles concave shapes correctly. Returns 0.0 for degenerate inputs
+    (fewer than 3 points).
+    """
+    n = len(polygon)
+    if n < 3:
+        return 0.0
+    s = 0.0
+    for i in range(n):
+        x1, y1 = polygon[i]
+        x2, y2 = polygon[(i + 1) % n]
+        s += x1 * y2 - x2 * y1
+    return abs(s) * 0.5
+
+
 def point_in_polygon(x: float, y: float, polygon: list[tuple[float, float]]) -> bool:
     """Ray-casting point-in-polygon test.
 

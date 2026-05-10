@@ -33,6 +33,45 @@ class TestPointInPolygon:
         assert state.point_in_polygon(0.5, 0.5, [(0, 0), (1, 0)]) is False  # degenerate
 
 
+class TestPolygonArea:
+    """Shoelace formula for zone area calculation. Polygon points are
+    local-frame meters, result is m²."""
+
+    def test_unit_square(self):
+        sq = [(0, 0), (1, 0), (1, 1), (0, 1)]
+        assert state.polygon_area(sq) == pytest.approx(1.0, abs=1e-9)
+
+    def test_10m_square(self):
+        sq = [(0, 0), (10, 0), (10, 10), (0, 10)]
+        assert state.polygon_area(sq) == pytest.approx(100.0, abs=1e-9)
+
+    def test_right_triangle(self):
+        # legs 4 and 3 → area 6
+        tri = [(0, 0), (4, 0), (0, 3)]
+        assert state.polygon_area(tri) == pytest.approx(6.0, abs=1e-9)
+
+    def test_concave_l_shape(self):
+        # 3x3 outer minus 2x2 notch = 9 - 4 = 5 m²
+        l_shape = [(0, 0), (3, 0), (3, 1), (1, 1), (1, 3), (0, 3)]
+        assert state.polygon_area(l_shape) == pytest.approx(5.0, abs=1e-9)
+
+    def test_winding_direction_doesnt_matter(self):
+        ccw = [(0, 0), (1, 0), (1, 1), (0, 1)]
+        cw = [(0, 0), (0, 1), (1, 1), (1, 0)]
+        assert state.polygon_area(ccw) == pytest.approx(state.polygon_area(cw), abs=1e-9)
+
+    def test_degenerate_inputs_return_zero(self):
+        assert state.polygon_area([]) == 0.0
+        assert state.polygon_area([(0, 0)]) == 0.0
+        assert state.polygon_area([(0, 0), (1, 1)]) == 0.0  # 2 points
+
+    def test_negative_coordinates(self):
+        # Local ENU frame can have negative x/y if mower is west/south of
+        # the RTK base. Area calc must be robust to that.
+        sq = [(-5, -5), (5, -5), (5, 5), (-5, 5)]
+        assert state.polygon_area(sq) == pytest.approx(100.0, abs=1e-9)
+
+
 class TestMergePbOutput:
     def test_merges_robotinfo(self):
         import lymow_extracted_pb2 as pb
