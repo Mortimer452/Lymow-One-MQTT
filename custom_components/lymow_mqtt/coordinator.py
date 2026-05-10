@@ -103,6 +103,13 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # that happens between checks.
         self._state_event = asyncio.Event()
 
+        # Reconnect-on-disconnect state. _shutting_down gates _handle_disconnect
+        # so async_unload's intentional disconnect doesn't trigger a reconnect
+        # storm. _reconnecting prevents overlapping reconnect attempts when
+        # paho fires on_disconnect multiple times in quick succession.
+        self._shutting_down: bool = False
+        self._reconnecting: bool = False
+
     async def async_setup(self) -> None:
         """Connect MQTT, fire startup queries, kick off REST poll."""
         # Initial REST device-info call (also gives us the IP for camera)
@@ -134,6 +141,9 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._rest_poll_task = self.hass.async_create_task(self._rest_poll_loop())
 
     async def async_unload(self) -> None:
+        # Set shutdown flag BEFORE disconnecting so the disconnect callback
+        # we're about to trigger doesn't kick off a reconnect attempt.
+        self._shutting_down = True
         if self._rest_poll_task:
             self._rest_poll_task.cancel()
             try:
@@ -312,13 +322,76 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.async_set_updated_data(self._state)
 
     def _handle_disconnect(self) -> None:
-        """Bridged from paho's on_disconnect — runs in asyncio."""
+        """Bridged from paho's on_disconnect — runs in asyncio.
+
+        Don't trust paho's auto-reconnect — our presigned URL has a 24h
+        SigV4 X-Amz-Expires baked in (sigv4.py:101). After that window,
+        paho would retry forever with an expired-signature URL and AWS
+        would reject every handshake. By tearing down and reconnecting
+        explicitly, we force `auth.ensure_valid()` and a freshly signed
+        URL each time.
+
+        The 24h URL TTL means most disconnects within a single day's
+        run get the same end result via paho's retry — but >24h runs
+        with a hard MQTT disconnect would silently fail without this.
+        """
+        if self._shutting_down or self._reconnecting:
+            return
         _LOGGER.warning(
-            "MQTT disconnected for %s; paho will auto-reconnect", self.thing_name
+            "MQTT disconnected for %s — refreshing creds and reconnecting",
+            self.thing_name,
         )
-        # paho handles reconnect internally; if it fails persistently we rely
-        # on the next _do_rest_poll cycle to detect offline. A more aggressive
-        # cred-refresh + manual reconnect can be added here if needed.
+        self.hass.async_create_task(self._reconnect_with_fresh_creds())
+
+    async def _reconnect_with_fresh_creds(self) -> None:
+        """Tear down the MQTT client and reconnect with a fresh presigned URL.
+
+        Loops with exponential backoff until reconnect succeeds or the
+        integration is being unloaded. After a successful reconnect, fires
+        a QUERY_MAP to refresh state since the disconnect window may have
+        included broadcasts we missed.
+        """
+        if self._shutting_down or self._reconnecting:
+            return
+        self._reconnecting = True
+        backoff = 5  # seconds; capped at 5 minutes below
+        try:
+            while not self._shutting_down:
+                try:
+                    if self.mqtt is None:
+                        _LOGGER.error(
+                            "MqttClient missing on %s; cannot reconnect",
+                            self.thing_name,
+                        )
+                        return
+                    await self.mqtt.disconnect()
+                    if self._shutting_down:
+                        return
+                    await self.mqtt.connect()
+                    _LOGGER.info(
+                        "MQTT reconnected for %s with fresh URL", self.thing_name
+                    )
+                    # Refresh state after the gap
+                    await self._publish_userctrl(
+                        USER_CTRL_QUERY_MAP, with_query_map_flag=True
+                    )
+                    return
+                except Exception as e:
+                    if self._shutting_down:
+                        return
+                    _LOGGER.warning(
+                        "Reconnect failed for %s: %s — retrying in %ss",
+                        self.thing_name,
+                        e,
+                        backoff,
+                    )
+                    try:
+                        await asyncio.sleep(backoff)
+                    except asyncio.CancelledError:
+                        return
+                    backoff = min(backoff * 2, 300)
+        finally:
+            self._reconnecting = False
 
     # ── REST online poll ────────────────────────────────────────
 
