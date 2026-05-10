@@ -27,13 +27,15 @@ from homeassistant.const import (
     UnitOfSpeed,
     UnitOfTime,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import state as state_mod
 from .const import DOMAIN, WARNING_CODE_LABELS, error_label, work_status_label
 from .coordinator import LymowCoordinator
 from .entity_base import LymowEntity
+from .protocol import ZoneInfo
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -500,12 +502,168 @@ class LymowSensor(LymowEntity, SensorEntity):
         return None
 
 
+# ─────────────────────────────────────────────
+# Per-zone sensor: last-mowed timestamp + metadata
+# ─────────────────────────────────────────────
+
+
+class LymowZoneSensor(LymowEntity, SensorEntity, RestoreEntity):
+    """One sensor per zone — state is the last mow timestamp.
+
+    State updates when a `cleanReport` arrives whose `cleanZoneIds` list
+    contains this zone's hashId. Persists across HA restarts via
+    RestoreEntity (timestamp + mow_count + last_session_minutes).
+
+    Entity_id pattern: `sensor.lymow_<thing_short>_zone_<zone_name_slug>`.
+    Friendly name: "Lymow <thing_short> Zone <Zone Name>".
+    Unique_id is anchored to the zone hashId, so renaming a zone in the
+    Lymow app preserves the entity (and any automations referencing it).
+    """
+
+    _attr_has_entity_name = True
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(self, coordinator: LymowCoordinator, hash_id: str, name: str) -> None:
+        super().__init__(coordinator, f"zone_{hash_id}")
+        self._hash_id = hash_id
+        # Live values overlay restored values; restored persists across
+        # HA restarts so the entity isn't blank if the integration loads
+        # before the next cleanReport.
+        self._last_mowed_ts: datetime | None = None
+        self._mow_count: int = 0
+        self._last_session_minutes: float | None = None
+        # Track the cleanReport object we've already counted, so we don't
+        # double-increment if the coordinator notifies us multiple times
+        # for the same report.
+        self._last_processed_report: Any = None
+        # _attr_name is set from the catalog name and refreshed on each
+        # coordinator update (zone renames in the app propagate here).
+        self._attr_name = f"Zone {name}"
+
+    async def async_added_to_hass(self) -> None:
+        """Restore last-known state from before the previous HA restart."""
+        await super().async_added_to_hass()
+        last = await self.async_get_last_state()
+        if last and last.state not in (None, "unknown", "unavailable"):
+            try:
+                self._last_mowed_ts = datetime.fromisoformat(last.state)
+            except (TypeError, ValueError):
+                pass
+            attrs = last.attributes or {}
+            try:
+                self._mow_count = int(attrs.get("mow_count", 0) or 0)
+            except (TypeError, ValueError):
+                self._mow_count = 0
+            v = attrs.get("last_session_minutes")
+            try:
+                self._last_session_minutes = float(v) if v is not None else None
+            except (TypeError, ValueError):
+                self._last_session_minutes = None
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Refresh entity name from catalog + count this zone in any new cleanReport."""
+        catalog = self.coordinator.state_dict.get("zone_catalog")
+        if catalog is not None:
+            zone = catalog.zones_by_hashid.get(self._hash_id)
+            if zone is not None:
+                # Pick up zone-name renames from the app
+                self._attr_name = f"Zone {zone.name}"
+
+        report = self.coordinator.state_dict.get("last_clean_report")
+        if report is not None and report is not self._last_processed_report:
+            self._last_processed_report = report
+            try:
+                zone_ids = list(report.cleanInfo.areaInfo.cleanZoneIds)
+            except (AttributeError, TypeError):
+                zone_ids = []
+            if self._hash_id in zone_ids:
+                self._last_mowed_ts = datetime.now(UTC)
+                self._mow_count += 1
+                # cleanTime is in seconds per arch.md §5b PbCleanReport notes
+                ci = getattr(report, "cleanInfo", None)
+                if ci is not None and ci.HasField("cleanTime"):
+                    self._last_session_minutes = round(ci.cleanTime / 60.0, 1)
+
+        super()._handle_coordinator_update()
+
+    @property
+    def native_value(self) -> datetime | None:
+        return self._last_mowed_ts
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Per-zone metadata + computed flags.
+
+        Reads catalog live each time (no caching of zone metadata) so
+        is_enabled / area_m2 reflect current state — zone toggles in the
+        app propagate immediately on the next coordinator update.
+        """
+        out: dict[str, Any] = {
+            "hash_id": self._hash_id,
+            "mow_count": self._mow_count,
+            "last_session_minutes": self._last_session_minutes,
+            "is_enabled": None,
+            "area_m2": None,
+            "mower_in_zone": False,
+        }
+        catalog = self.coordinator.state_dict.get("zone_catalog")
+        if catalog is None:
+            return out
+        zone = catalog.zones_by_hashid.get(self._hash_id)
+        if zone is None:
+            # Zone deleted from the app — entity stays in registry but
+            # we have nothing to compute. Caller can clean up via "Reset"
+            # on the device card.
+            return out
+        out["is_enabled"] = zone.is_enabled
+        if zone.polygon_points:
+            out["area_m2"] = round(state_mod.polygon_area(zone.polygon_points), 1)
+            pose = self.coordinator.state_dict.get("pose")
+            if pose is not None and hasattr(pose, "x") and hasattr(pose, "y"):
+                out["mower_in_zone"] = state_mod.point_in_polygon(
+                    pose.x, pose.y, zone.polygon_points
+                )
+        return out
+
+
+# ─────────────────────────────────────────────
+# Platform setup
+# ─────────────────────────────────────────────
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     coord: LymowCoordinator = hass.data[DOMAIN][entry.entry_id]
-    entities = [
-        LymowSensor(coord, d)
-        for d in (*PRIMARY_SENSORS, *DIAGNOSTIC_SENSORS)
-    ]
-    async_add_entities(entities)
+
+    # Fixed sensors — register immediately, available before the catalog lands
+    async_add_entities(
+        [LymowSensor(coord, d) for d in (*PRIMARY_SENSORS, *DIAGNOSTIC_SENSORS)]
+    )
+
+    # Per-zone sensors — discovered from the catalog, which arrives over MQTT
+    # after async_setup_entry runs. Listen for coordinator updates and add
+    # entities for any new zone hashIds we haven't seen yet. Same listener
+    # also catches zones the user adds via the app post-install.
+    seen_hash_ids: set[str] = set()
+
+    @callback
+    def _discover_zone_entities() -> None:
+        catalog = coord.state_dict.get("zone_catalog")
+        if catalog is None or not catalog.zones:
+            return
+        new: list[LymowZoneSensor] = []
+        for zone in catalog.zones:
+            if zone.hash_id in seen_hash_ids:
+                continue
+            new.append(LymowZoneSensor(coord, zone.hash_id, zone.name))
+            seen_hash_ids.add(zone.hash_id)
+        if new:
+            async_add_entities(new)
+
+    # Register the listener and try once immediately in case the catalog
+    # already loaded between coordinator setup and platform setup (rare,
+    # but possible — depends on QUERY_MAP response timing).
+    entry.async_on_unload(coord.async_add_listener(_discover_zone_entities))
+    _discover_zone_entities()
