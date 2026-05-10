@@ -71,6 +71,67 @@ def encode_start_zones(zone_hash_ids: list[str]) -> bytes:
     return pb_in.SerializeToString()
 
 
+def encode_upload_robot_config() -> bytes:
+    """Encode the L3 wakeup payload that triggers a robotConfig broadcast.
+
+    Per arch.md §7a Layer 3, sending PbInput with
+    `debugSetting.uploadRobotConfig=true` makes the firmware re-broadcast its
+    current `robotConfig` (containing rrConfig auto-recharge thresholds among
+    other things). No userCtrl required — the firmware reacts to the debug
+    flag directly.
+
+    Used at integration startup so entities backed by `robotConfig` (the
+    auto-recharge switch) become available without waiting for a state-burst.
+    """
+    pb_in = pb.PbInput()
+    pb_in.version = PB_VERSION_4_9
+    pb_in.debugSetting.uploadRobotConfig = True
+    return pb_in.SerializeToString()
+
+
+def encode_set_rr_config(
+    *,
+    enable_rr: bool,
+    recharge_bat: int | None,
+    resume_bat: int | None,
+    period_start_hour: int | None,
+    period_start_minute: int | None,
+    period_end_hour: int | None,
+    period_end_minute: int | None,
+) -> bytes:
+    """Encode the no-userCtrl `setRR` payload (arch.md §6g).
+
+    Writes `robotConfig.rrConfig` with the supplied fields and triggers a
+    confirmation broadcast via `debugSetting.uploadRobotConfig=true`. The
+    firmware applies the new rrConfig within ~1s and broadcasts back the
+    updated PbRobotConfig so we can verify the write took.
+
+    Caller is responsible for "carry-forward" preservation: read the current
+    rrConfig from coordinator state, mutate only the field(s) being changed,
+    pass the rest unchanged so they aren't reset to firmware defaults.
+    Verified via spike_set_rrconfig.py round-trip on 2026-05-10.
+    """
+    pb_in = pb.PbInput()
+    pb_in.version = PB_VERSION_4_9
+    # Deliberately NO userCtrl — setRR is the no-userCtrl pattern (§6g).
+    rr = pb_in.robotConfig.rrConfig
+    rr.enableRr = enable_rr
+    if recharge_bat is not None:
+        rr.rechargeBat = recharge_bat
+    if resume_bat is not None:
+        rr.resumeBat = resume_bat
+    if period_start_hour is not None:
+        rr.resumePeriodStart.hour = period_start_hour
+    if period_start_minute is not None:
+        rr.resumePeriodStart.minute = period_start_minute
+    if period_end_hour is not None:
+        rr.resumePeriodEnd.hour = period_end_hour
+    if period_end_minute is not None:
+        rr.resumePeriodEnd.minute = period_end_minute
+    pb_in.debugSetting.uploadRobotConfig = True
+    return pb_in.SerializeToString()
+
+
 def decode_pboutput(raw: bytes) -> pb.PbOutput:
     """Parse raw protobuf bytes as PbOutput. Raises on malformed input."""
     msg = pb.PbOutput()

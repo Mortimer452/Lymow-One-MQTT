@@ -75,6 +75,9 @@
     "device_tracker": {
       "rtk_base": {"name": "RTK base"},
       "mower_position": {"name": "Mower position"}
+    },
+    "switch": {
+      "auto_recharge": {"name": "Auto recharge & resume"}
     }
   }
 }

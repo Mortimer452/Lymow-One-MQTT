@@ -128,6 +128,10 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # the source we need; dropped to keep startup quiet.
         await self._publish_userctrl(USER_CTRL_QUERY_MAP, with_query_map_flag=True)
         await self._publish_userctrl(USER_CTRL_QUERY_SCHEDULES)
+        # L3 wakeup — triggers a robotConfig broadcast so the auto-recharge
+        # switch can read its initial state without waiting for a state-burst.
+        # 8 bytes, fires once. See arch.md §7a Layer 3.
+        await self._publish_raw(protocol.encode_upload_robot_config())
         self._last_catalog_query_at = datetime.now(UTC)
 
         # Kick off the REST poll task
@@ -366,6 +370,62 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ok = self.mqtt.publish_pbinput(raw)
         if not ok:
             raise HomeAssistantError(f"MQTT publish failed for userCtrl={user_ctrl}")
+
+    async def _publish_raw(self, raw: bytes) -> None:
+        """Publish a pre-encoded PbInput payload. Used for non-userCtrl
+        commands like the L3 wakeup and setRR config writes."""
+        if not self.mqtt or not self.mqtt.is_connected:
+            raise HomeAssistantError("MQTT not connected")
+        ok = self.mqtt.publish_pbinput(raw)
+        if not ok:
+            raise HomeAssistantError("MQTT publish failed")
+
+    async def cmd_set_auto_recharge(self, enabled: bool) -> None:
+        """Toggle the firmware's auto-recharge-and-resume feature.
+
+        Reads the current rrConfig from coordinator state to carry forward
+        the user's other preferences (battery thresholds, time window) so
+        toggling the switch doesn't reset them. Builds the no-userCtrl setRR
+        payload (arch.md §6g) and publishes. The firmware applies the new
+        config and broadcasts back the updated robotConfig within ~1s.
+
+        Raises HomeAssistantError if no robotConfig has been received yet —
+        we'd otherwise be writing default zero values for the carry-forward
+        fields, nuking the user's settings.
+        """
+        rc = self._state.get("robotConfig")
+        if rc is None or not rc.HasField("rrConfig"):
+            raise HomeAssistantError(
+                "No rrConfig in state yet — wait a few seconds for the "
+                "mower to broadcast its current config, then retry."
+            )
+        rr = rc.rrConfig
+        raw = protocol.encode_set_rr_config(
+            enable_rr=enabled,
+            recharge_bat=rr.rechargeBat if rr.HasField("rechargeBat") else None,
+            resume_bat=rr.resumeBat if rr.HasField("resumeBat") else None,
+            period_start_hour=(
+                rr.resumePeriodStart.hour
+                if rr.HasField("resumePeriodStart") and rr.resumePeriodStart.HasField("hour")
+                else None
+            ),
+            period_start_minute=(
+                rr.resumePeriodStart.minute
+                if rr.HasField("resumePeriodStart") and rr.resumePeriodStart.HasField("minute")
+                else None
+            ),
+            period_end_hour=(
+                rr.resumePeriodEnd.hour
+                if rr.HasField("resumePeriodEnd") and rr.resumePeriodEnd.HasField("hour")
+                else None
+            ),
+            period_end_minute=(
+                rr.resumePeriodEnd.minute
+                if rr.HasField("resumePeriodEnd") and rr.resumePeriodEnd.HasField("minute")
+                else None
+            ),
+        )
+        await self._publish_raw(raw)
 
     async def _wait_for_state(self, expected: set[int], timeout: float) -> bool:
         """Wait until robotInfo.workStatus or robotStatus is in expected, or timeout.

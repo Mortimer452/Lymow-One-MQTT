@@ -54,6 +54,114 @@ class TestEncodeQueryMap:
         assert msg.btMap.queryMap is True
 
 
+class TestEncodeUploadRobotConfig:
+    def test_encodes_l3_wakeup_payload(self):
+        """L3 wakeup is `version=40 + debugSetting.uploadRobotConfig=true`,
+        no userCtrl. Triggers a robotConfig broadcast (arch.md §7a Layer 3)."""
+        import lymow_extracted_pb2 as pb
+        raw = protocol.encode_upload_robot_config()
+        msg = pb.PbInput()
+        msg.ParseFromString(raw)
+        assert msg.version == 40
+        assert not msg.HasField("userCtrl") or msg.userCtrl == 0
+        assert msg.debugSetting.uploadRobotConfig is True
+        # Should NOT also set uploadTaskConfig — that's a different concern
+        assert not msg.debugSetting.HasField("uploadTaskConfig") or not msg.debugSetting.uploadTaskConfig
+
+
+class TestEncodeSetRrConfig:
+    """The no-userCtrl `setRR` payload (arch.md §6g) — verified via
+    spike_set_rrconfig.py round-trip on 2026-05-10."""
+
+    def test_no_user_ctrl(self):
+        """setRR is the no-userCtrl pattern — firmware reacts to a populated
+        robotConfig.rrConfig field, not a userCtrl int."""
+        import lymow_extracted_pb2 as pb
+        raw = protocol.encode_set_rr_config(
+            enable_rr=True,
+            recharge_bat=15, resume_bat=75,
+            period_start_hour=15, period_start_minute=30,
+            period_end_hour=2, period_end_minute=30,
+        )
+        msg = pb.PbInput()
+        msg.ParseFromString(raw)
+        # version is set to 40
+        assert msg.version == 40
+        # userCtrl deliberately absent
+        assert not msg.HasField("userCtrl") or msg.userCtrl == 0
+
+    def test_rrconfig_round_trip(self):
+        """All five rrConfig fields make it into the payload intact."""
+        import lymow_extracted_pb2 as pb
+        raw = protocol.encode_set_rr_config(
+            enable_rr=True,
+            recharge_bat=20, resume_bat=70,
+            period_start_hour=15, period_start_minute=30,
+            period_end_hour=2, period_end_minute=30,
+        )
+        msg = pb.PbInput()
+        msg.ParseFromString(raw)
+        rr = msg.robotConfig.rrConfig
+        assert rr.enableRr is True
+        assert rr.rechargeBat == 20
+        assert rr.resumeBat == 70
+        assert rr.resumePeriodStart.hour == 15
+        assert rr.resumePeriodStart.minute == 30
+        assert rr.resumePeriodEnd.hour == 2
+        assert rr.resumePeriodEnd.minute == 30
+
+    def test_upload_robot_config_flag_set(self):
+        """The uploadRobotConfig debug flag is required for the firmware to
+        echo back its updated robotConfig — without it, the write may apply
+        but we'd have no way to confirm."""
+        import lymow_extracted_pb2 as pb
+        raw = protocol.encode_set_rr_config(
+            enable_rr=False,
+            recharge_bat=15, resume_bat=75,
+            period_start_hour=None, period_start_minute=None,
+            period_end_hour=None, period_end_minute=None,
+        )
+        msg = pb.PbInput()
+        msg.ParseFromString(raw)
+        assert msg.debugSetting.uploadRobotConfig is True
+
+    def test_optional_fields_omitted(self):
+        """Passing None for a field should leave it unset on the wire."""
+        import lymow_extracted_pb2 as pb
+        raw = protocol.encode_set_rr_config(
+            enable_rr=True,
+            recharge_bat=None, resume_bat=None,
+            period_start_hour=None, period_start_minute=None,
+            period_end_hour=None, period_end_minute=None,
+        )
+        msg = pb.PbInput()
+        msg.ParseFromString(raw)
+        rr = msg.robotConfig.rrConfig
+        assert rr.enableRr is True
+        # Optional fields should not be set
+        assert not rr.HasField("rechargeBat")
+        assert not rr.HasField("resumeBat")
+        assert not rr.HasField("resumePeriodStart")
+        assert not rr.HasField("resumePeriodEnd")
+
+    def test_enable_rr_false_round_trips(self):
+        """proto3 has implicit-presence quirks for bools — confirm a False
+        value actually gets serialized (not optimized out as default)."""
+        import lymow_extracted_pb2 as pb
+        raw = protocol.encode_set_rr_config(
+            enable_rr=False,
+            recharge_bat=15, resume_bat=75,
+            period_start_hour=15, period_start_minute=30,
+            period_end_hour=2, period_end_minute=30,
+        )
+        msg = pb.PbInput()
+        msg.ParseFromString(raw)
+        # PbRRConfig.enableRr is `optional bool` — explicit-presence — so
+        # False is distinguishable from "unset" via HasField
+        assert msg.robotConfig.rrConfig.HasField("enableRr")
+        assert msg.robotConfig.rrConfig.enableRr is False
+
+
 class TestEncodeStartZones:
     def test_start_zones_two_zones_in_order(self):
         raw = protocol.encode_start_zones(["aaaa1111", "bbbb2222"])

@@ -25,6 +25,7 @@ PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
     Platform.CAMERA,
     Platform.DEVICE_TRACKER,
+    Platform.SWITCH,
 ]
 
 # Internal entry-data keys (must match config_flow.py)
