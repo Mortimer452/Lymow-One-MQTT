@@ -578,10 +578,12 @@ class LymowZoneSensor(LymowEntity, SensorEntity, RestoreEntity):
             if self._hash_id in zone_ids:
                 self._last_mowed_ts = datetime.now(UTC)
                 self._mow_count += 1
-                # cleanTime is in seconds per arch.md §5b PbCleanReport notes
+                # cleanTime is int32 minutes — same field/unit as the existing
+                # last_mow_duration sensor (UnitOfTime.MINUTES). No conversion
+                # needed; storing the raw value.
                 ci = getattr(report, "cleanInfo", None)
                 if ci is not None and ci.HasField("cleanTime"):
-                    self._last_session_minutes = round(ci.cleanTime / 60.0, 1)
+                    self._last_session_minutes = ci.cleanTime
 
         super()._handle_coordinator_update()
 
