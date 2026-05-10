@@ -596,15 +596,23 @@ class LymowZoneSensor(LymowEntity, SensorEntity, RestoreEntity):
         """Per-zone metadata + computed flags.
 
         Reads catalog live each time (no caching of zone metadata) so
-        is_enabled / area_m2 reflect current state — zone toggles in the
+        is_enabled / area reflect current state — zone toggles in the
         app propagate immediately on the next coordinator update.
+
+        `area` is converted to the user's preferred unit (m² metric, ft²
+        imperial) based on `hass.config.units`. HA's automatic unit
+        conversion only works on sensor state values, not attributes, so
+        we do it manually here. `area_unit` carries the unit string for
+        users / template authors who want to know which it is without
+        re-checking hass.config.units themselves.
         """
         out: dict[str, Any] = {
             "hash_id": self._hash_id,
             "mow_count": self._mow_count,
             "last_session_minutes": self._last_session_minutes,
             "is_enabled": None,
-            "area_m2": None,
+            "area": None,
+            "area_unit": None,
             "mower_in_zone": False,
         }
         catalog = self.coordinator.state_dict.get("zone_catalog")
@@ -618,7 +626,26 @@ class LymowZoneSensor(LymowEntity, SensorEntity, RestoreEntity):
             return out
         out["is_enabled"] = zone.is_enabled
         if zone.polygon_points:
-            out["area_m2"] = round(state_mod.polygon_area(zone.polygon_points), 1)
+            area_m2 = state_mod.polygon_area(zone.polygon_points)
+            # Lazy import — HA's unit conversion utilities aren't available
+            # in the pure-Python test environment.
+            from homeassistant.const import UnitOfArea
+            from homeassistant.util.unit_conversion import AreaConverter
+            from homeassistant.util.unit_system import METRIC_SYSTEM
+
+            if self.hass.config.units is METRIC_SYSTEM:
+                out["area"] = round(area_m2, 1)
+                out["area_unit"] = UnitOfArea.SQUARE_METERS
+            else:
+                out["area"] = round(
+                    AreaConverter.convert(
+                        area_m2,
+                        UnitOfArea.SQUARE_METERS,
+                        UnitOfArea.SQUARE_FEET,
+                    ),
+                    1,
+                )
+                out["area_unit"] = UnitOfArea.SQUARE_FEET
             pose = self.coordinator.state_dict.get("pose")
             if pose is not None and hasattr(pose, "x") and hasattr(pose, "y"):
                 out["mower_in_zone"] = state_mod.point_in_polygon(
