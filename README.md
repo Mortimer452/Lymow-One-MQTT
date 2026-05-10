@@ -22,6 +22,7 @@ The integration is **strictly-passive** by design, just listens to messages sent
 - **Read-only schedule sensor** with the next upcoming run plus all schedules in attributes.
 - **RTSP camera** entity streaming the mower's onboard camera over your LAN.
 - **Diagnostic sensors:** RTK quality, signal strength, firmware version, IP address, last-mow summary, error codes.
+- **Per-zone sensors:** Tracks last mow time per zone. Sensor attributes track mow count by zone, time spent, zone area.
 - **Push-driven** — no chattery polling for state, ~15-min REST poll only for online/offline detection.
 
 ## Install (HACS custom repository)
@@ -65,7 +66,7 @@ The standard `Dock` action on the lawn_mower entity behaves the same as tapping 
 ## Caveats
 
 - **Federated sign-in requires a manual paste step** every config flow / reauth. We tried to find a redirect URI that would let us auto-capture the code — Cognito only accepts `myapp://callback/` for this client, so manual paste is unavoidable.
-- The integration is independent from the upstream `d3dfantasy99/Lymow-HA` integration, no name conflicts so you can run both at the same time if desired
+- The integration is independent from the `d3dfantasy99/Lymow-HA` integration, no name conflicts so you can run both at the same time if desired
 
 ## Known issues
 
