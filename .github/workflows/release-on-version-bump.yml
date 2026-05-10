@@ -1,0 +1,74 @@
+name: Draft release on version bump
+
+# Triggers when manifest.json's version field changes on main.
+# Workflow creates a DRAFT release with auto-generated PR list pre-filled.
+# Maintainer edits the body to add the human-readable "What's new" prose,
+# then clicks "Publish release" to actually fire the release.
+#
+# Drafts are invisible to HACS — only published releases trigger user-facing
+# update notifications. The git tag isn't created until the release is
+# published, so abandoning a draft leaves no orphan tag in the repo.
+on:
+  push:
+    branches: [main]
+    paths: ['custom_components/lymow_mqtt/manifest.json']
+
+permissions:
+  contents: write  # required to create the draft release
+
+jobs:
+  draft-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need full history so --generate-notes can find the previous tag
+          fetch-depth: 0
+
+      - name: Read version from manifest
+        id: version
+        run: |
+          VERSION=$(jq -r .version custom_components/lymow_mqtt/manifest.json)
+          if [[ -z "$VERSION" || "$VERSION" == "null" ]]; then
+            echo "::error::Could not read .version from manifest.json"
+            exit 1
+          fi
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected version: v$VERSION"
+
+      - name: Skip if tag already exists on remote
+        id: tag_check
+        run: |
+          if git rev-parse "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${{ steps.version.outputs.tag }} already exists; nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip if draft release already exists
+        id: draft_check
+        if: steps.tag_check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release object for ${{ steps.version.outputs.tag }} already exists (likely draft); nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create draft release
+        if: steps.tag_check.outputs.exists == 'false' && steps.draft_check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "${{ steps.version.outputs.tag }}" \
+            --draft \
+            --generate-notes \
+            --target main
+          echo "Draft release ${{ steps.version.outputs.tag }} created."
+          echo "Edit the body at:"
+          echo "  https://github.com/${{ github.repository }}/releases"
