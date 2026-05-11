@@ -55,11 +55,16 @@ class LymowAutoRechargeSwitch(LymowEntity, SwitchEntity):
     def is_on(self) -> bool | None:
         rc = self.coordinator.state_dict.get("robotConfig")
         if rc is None or not rc.HasField("rrConfig"):
+            # rrConfig hasn't arrived yet — paired with the `available` gate
+            # below, this branch is unreachable in practice, but stays as a
+            # belt-and-suspenders default.
             return None
-        rr = rc.rrConfig
-        if not rr.HasField("enableRr"):
-            return None
-        return bool(rr.enableRr)
+        # rrConfig is in the cache. The firmware omits `enableRr` from the
+        # wire when the value is the proto3 default (False) — so the absence
+        # of the field IS the "disabled" signal, not an "unknown" signal.
+        # Compare with the receive-side fix in state.py (rrConfig is now
+        # replaced rather than merged for exactly this reason).
+        return bool(rc.rrConfig.enableRr)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self.coordinator.cmd_set_auto_recharge(True)

@@ -139,7 +139,29 @@ def merge_pboutput(state_dict: dict[str, Any], msg) -> None:
         # we don't want to accumulate stale tasks.
         state_dict["schedule"] = msg.schedule
     if "robotConfig" in populated_names:
-        _merge_sticky("robotConfig", msg.robotConfig)
+        new_rc = msg.robotConfig
+        existing_rc = state_dict.get("robotConfig")
+        if existing_rc is None:
+            cloned = new_rc.__class__()
+            cloned.CopyFrom(new_rc)
+            state_dict["robotConfig"] = cloned
+        else:
+            # rrConfig.enableRr is `optional bool` and the firmware does not
+            # serialize it on the wire when the device-side value is the
+            # default (false). proto3 MergeFrom can't tell "field absent on
+            # wire" from "value is false" — both look identical — so it would
+            # preserve a stale cached enableRr=true forever once the cache
+            # picked one up. Clearing rrConfig before the outer MergeFrom
+            # forces a full replace of just the rrConfig sub-message; the
+            # other rrConfig fields (rechargeBat / resumeBat / resumePeriod*)
+            # are always fully echoed when rrConfig is present in the wire
+            # payload, so replacing rrConfig wholesale is safe. Other
+            # robotConfig fields (audioVolume, camLedStatus, etc.) keep the
+            # sticky-merge behavior. See arch.md §6e + the project memory
+            # `project_rrconfig_replace_semantics`.
+            if new_rc.HasField("rrConfig"):
+                existing_rc.ClearField("rrConfig")
+            existing_rc.MergeFrom(new_rc)
     if "debugSetting" in populated_names:
         _merge_sticky("debugSetting", msg.debugSetting)
     if "netDetailInfo" in populated_names:

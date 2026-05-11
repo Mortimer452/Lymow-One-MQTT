@@ -473,30 +473,25 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "mower to broadcast its current config, then retry."
             )
         rr = rc.rrConfig
+        # Carry-forward must ALWAYS emit the PbTimeZone sub-messages — the
+        # firmware uses REPLACE (not merge) semantics for those, so a setRR
+        # without resumePeriodStart/End on the wire resets the user's saved
+        # window to 00:00. The official app at decompiled.js:328846 always
+        # includes both fields for exactly this reason. We default the inner
+        # hour/minute to 0 when the device echoed an empty `{}` sub-message
+        # (which means hour=0, minute=0 anyway), so the wire payload always
+        # carries the full PbTimeZone. See arch.md §6g + the project memory
+        # `project_rrconfig_replace_semantics`.
+        ps = rr.resumePeriodStart if rr.HasField("resumePeriodStart") else None
+        pe = rr.resumePeriodEnd   if rr.HasField("resumePeriodEnd")   else None
         raw = protocol.encode_set_rr_config(
             enable_rr=enabled,
             recharge_bat=rr.rechargeBat if rr.HasField("rechargeBat") else None,
             resume_bat=rr.resumeBat if rr.HasField("resumeBat") else None,
-            period_start_hour=(
-                rr.resumePeriodStart.hour
-                if rr.HasField("resumePeriodStart") and rr.resumePeriodStart.HasField("hour")
-                else None
-            ),
-            period_start_minute=(
-                rr.resumePeriodStart.minute
-                if rr.HasField("resumePeriodStart") and rr.resumePeriodStart.HasField("minute")
-                else None
-            ),
-            period_end_hour=(
-                rr.resumePeriodEnd.hour
-                if rr.HasField("resumePeriodEnd") and rr.resumePeriodEnd.HasField("hour")
-                else None
-            ),
-            period_end_minute=(
-                rr.resumePeriodEnd.minute
-                if rr.HasField("resumePeriodEnd") and rr.resumePeriodEnd.HasField("minute")
-                else None
-            ),
+            period_start_hour=(ps.hour   if ps is not None else 0),
+            period_start_minute=(ps.minute if ps is not None else 0),
+            period_end_hour=(pe.hour     if pe is not None else 0),
+            period_end_minute=(pe.minute   if pe is not None else 0),
         )
         await self._publish_raw(raw)
 
