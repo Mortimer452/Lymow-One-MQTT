@@ -130,12 +130,17 @@ def _rtk_quality(s):
     li = s.get("localizationInfo")
     if li is None or not li.HasField("positionQuality"):
         return None
-    pq = li.positionQuality
-    if pq == 1:
-        return "Float fix"
-    if pq == 3:
-        return "Fixed cm"
-    return f"unknown ({pq})"
+    # PbLocalizationInfo.positionQuality enum (decompiled.js:388820-388873).
+    # NOTE: this is the 4-value LocalQuality enum used inside localizationInfo,
+    # NOT the 3-value RtkStatus enum (RTK_NOT_READY/FLOAT/FIX) that lives on
+    # PbRtkDiagnosticL1.rtkStatus. The two are easy to confuse — different
+    # field, different enum.
+    return {
+        0: "No signal",
+        1: "GPS only",   # SINGLE_POINT — standard GPS, no RTK lock
+        2: "Float fix",  # FLOAT_FIXED — RTK sub-meter
+        3: "Fixed cm",   # FIXED — RTK centimeter
+    }.get(li.positionQuality, f"unknown ({li.positionQuality})")
 
 
 def _horizontal_accuracy(s):
