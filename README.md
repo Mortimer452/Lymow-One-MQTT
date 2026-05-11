@@ -12,7 +12,7 @@ Whatever you do in the app, this HA integration will see it, too, most sensors u
 
 The integration is strictly-passive by design, just listens to messages sent by the mower. Message updates (battery level, time elapsed, percent complete, current zone, etc) occur roughly every 30-60 seconds during mowing, but much slower during charging (5-15 minutes)
 
-> **Status:** v0.3.0 — adds per-zone last-mowed sensors for time-based mow automations. Tested on Lymow One. **Lymow One Plus** is expected to work but is unverified — please open an issue if you have one.
+> **Status:** v0.3.1 — adds an auto-recharge-and-resume switch, plus a reliability fix for long-running installs. Tested on Lymow One. **Lymow One Plus** is expected to work but is unverified — please open an issue if you have one.
 
 ## Features
 
