@@ -104,6 +104,23 @@ WORK_STATUS_RTT            = 15  # factory RTT test mode
 # Virtual status (not in protobuf enum, set locally when shadow absent)
 WORK_STATUS_OFFLINE        = -1
 
+# Workstatuses during which a mow task is actively running or paused mid-task.
+# Used by the map camera's task-highlight gate: green outlines on zones whose
+# mowOrder > 0 are shown only when the firmware says a task exists right now
+# (so a freshly-completed task's residual mowOrder values don't keep glowing
+# green). See arch.md §8b for why mowOrder is the truth-source for selection
+# and arch.md §7 for the workStatus state machine.
+ACTIVE_TASK_STATUSES: frozenset[int] = frozenset({
+    WORK_STATUS_MOWING,
+    WORK_STATUS_PAUSE,
+    WORK_STATUS_DOCKING,
+    WORK_STATUS_ERROR,
+    WORK_STATUS_RESUME,
+    WORK_STATUS_ZONE_PARTITION,
+    WORK_STATUS_PAUSE_DOCKING,
+    WORK_STATUS_ESCAPING,
+})
+
 # Friendly labels for work_status and robot_status sensors. Same enum
 # (PbRobotInfo.workStatus / .robotStatus), so one table covers both.
 WORK_STATUS_LABELS: dict[int, str] = {

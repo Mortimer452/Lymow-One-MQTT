@@ -296,6 +296,10 @@ class ZoneInfo:
     # when the inner PbZone carries a zoneConfig sub-message. Used by
     # state.active_cut_config for the per-zone tier of the inheritance walker.
     zone_config: object | None = None
+    # PbZoneBasicInfo.mowOrderTextPos — the user's saved label-position hint
+    # from the app. None if not set; renderers should fall back to the
+    # polygon centroid in that case. Local-frame (x, y).
+    text_pos: tuple[float, float] | None = None
 
 
 @dataclass
@@ -374,12 +378,14 @@ def parse_zone_catalog(bt_map) -> ZoneCatalog:
             bi = _parse_pbzone_basicinfo(zone_msg[1][0][1])
             if not bi.get("hashId") or not HASHID_RE.match(bi["hashId"]):
                 continue
+            tp = bi.get("textPos")
             zi = ZoneInfo(
                 hash_id=bi["hashId"],
                 name=bi.get("name") or bi.get("zoneRename") or bi["hashId"],
                 mow_order=int(bi.get("mowOrder") or 0),
                 is_enabled=bool(bi.get("isEnabled")) if bi.get("isEnabled") is not None else True,
                 polygon_points=list(bi.get("polygon") or []),
+                text_pos=(float(tp["x"]), float(tp["y"])) if isinstance(tp, dict) else None,
             )
             # Parse field 2 (zoneConfig) into a PbZoneConfig if present so
             # state.active_cut_config can read per-zone overrides via HasField.

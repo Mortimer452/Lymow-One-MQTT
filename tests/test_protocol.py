@@ -292,7 +292,7 @@ class TestZoneCatalogParser:
         This is the QUERY_PATH case — small btMap responses with path data
         only, no PbMap structure. The integration's coordinator depends on
         this signal to skip the sticky-state lift and preserve the prior
-        enu_base_point across burst-mode QUERY_PATH bombardment.
+        enu_base_point across repeated QUERY_PATH responses.
         """
         envelope = load_fixture("query_map_response.bin")
         msg = protocol.decode_pboutput_envelope(envelope)
