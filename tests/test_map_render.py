@@ -188,3 +188,73 @@ class TestRenderMap:
         )
         assert out is not None
         assert out.startswith(PNG_MAGIC)
+
+
+class TestRenderSignalMap:
+    def test_empty_grid_with_zones_still_renders(self):
+        from lymow_mqtt import signal_grid as sg
+        catalog = _catalog_with_zones(_square_zone("Front"))
+        out = map_render.render_signal_map(
+            catalog=catalog,
+            pose=None,
+            dock=None,
+            signal_grid=sg.SignalGrid(),
+            cell_m=sg.CELL_M,
+            width=400,
+            height=300,
+        )
+        assert out is not None
+        assert out.startswith(PNG_MAGIC)
+
+    def test_populated_grid_renders_heat_overlay(self):
+        from lymow_mqtt import signal_grid as sg
+        catalog = _catalog_with_zones(_square_zone("Front"))
+        grid = sg.SignalGrid()
+        # Sprinkle samples across a few cells inside the zone — one of
+        # each color bucket so every branch of _heat_color_ha is exercised.
+        grid.record(1.0, 1.0, horizontal_accuracy=0.02)
+        grid.record(2.0, 2.0, horizontal_accuracy=0.08)
+        grid.record(3.0, 3.0, horizontal_accuracy=0.15)
+        grid.record(4.0, 4.0, horizontal_accuracy=0.30)
+        grid.record(4.5, 4.5, horizontal_accuracy=2.50)
+        out = map_render.render_signal_map(
+            catalog=catalog,
+            pose=FakePose(x=2.5, y=2.5, theta=0.0),
+            dock=FakePose(x=0.0, y=0.0),
+            signal_grid=grid,
+            cell_m=sg.CELL_M,
+            width=512,
+            height=384,
+        )
+        assert out is not None
+        assert out.startswith(PNG_MAGIC)
+
+    def test_empty_everything_returns_none(self):
+        from lymow_mqtt import signal_grid as sg
+        out = map_render.render_signal_map(
+            catalog=ZoneCatalog(),
+            pose=None,
+            dock=None,
+            signal_grid=sg.SignalGrid(),
+            cell_m=sg.CELL_M,
+        )
+        assert out is None
+
+    def test_grid_only_no_zones_still_renders(self):
+        # If the user has cells from earlier mowing but the catalog hasn't
+        # arrived yet on this session, the renderer should still produce
+        # a heat-only image rather than refusing.
+        from lymow_mqtt import signal_grid as sg
+        grid = sg.SignalGrid()
+        grid.record(1.0, 1.0, horizontal_accuracy=0.05)
+        out = map_render.render_signal_map(
+            catalog=ZoneCatalog(),
+            pose=None,
+            dock=None,
+            signal_grid=grid,
+            cell_m=sg.CELL_M,
+            width=200,
+            height=200,
+        )
+        assert out is not None
+        assert out.startswith(PNG_MAGIC)

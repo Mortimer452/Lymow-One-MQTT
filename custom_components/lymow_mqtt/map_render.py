@@ -51,6 +51,19 @@ _LABEL_PLAIN      = (166, 173, 200, 255)
 _LABEL_TASK       = (166, 227, 161, 255)
 _LABEL_POSE       = (250, 179, 135, 255)
 
+# Heat-map cell colors for the `signal_map` camera. Bucketed by the value
+# of `horizontal_accuracy` in meters (lower = better RTK quality).
+# Semi-transparent so zone outlines / channel lines remain readable on top.
+_HEAT_ALPHA = 150
+_HEAT_BUCKETS_HA: tuple[tuple[float, tuple[int, int, int, int]], ...] = (
+    # (upper bound m, fill rgba) — first match wins. Last bucket catches all.
+    (0.05, (102, 204, 102, _HEAT_ALPHA)),  # <5cm  — bright green (fixed cm)
+    (0.10, (166, 227, 161, _HEAT_ALPHA)),  # <10cm — green
+    (0.20, (249, 226, 175, _HEAT_ALPHA)),  # <20cm — yellow
+    (0.50, (250, 179, 135, _HEAT_ALPHA)),  # <50cm — orange
+    (float("inf"), (243, 139, 168, _HEAT_ALPHA)),  # >=50cm — red
+)
+
 # A modest pad around the polygon bounds so polygons don't kiss the edges
 # and labels at the perimeter have room to breathe (matches the harness's
 # `xmin - 1` / `xmax + 1` padding in local-frame meters).
@@ -361,6 +374,191 @@ def render_map(
         draw.ellipse((mx - r, my - r, mx + r, my + r), fill=_MOWER)
         # Pose theta is in radians, mower frame x→east / y→north. The image
         # y-axis is flipped, so the heading vector also flips its y term.
+        theta = float(pose.theta)
+        hx = mx + math.cos(theta) * 14
+        hy = my - math.sin(theta) * 14
+        draw.line([(mx, my), (hx, hy)], fill=_MOWER_HEADING, width=3)
+
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+# ── Signal heat map ────────────────────────────────────────────────────────
+
+
+def _heat_color_ha(value: float) -> tuple[int, int, int, int]:
+    """Bucket-lookup RGBA fill for a horizontal_accuracy heat cell."""
+    for upper, color in _HEAT_BUCKETS_HA:
+        if value < upper:
+            return color
+    return _HEAT_BUCKETS_HA[-1][1]  # unreachable; the last upper is +inf
+
+
+def _collect_bounds_with_grid(
+    catalog,
+    pose,
+    dock,
+    signal_grid,
+    cell_m: float,
+) -> tuple[float, float, float, float] | None:
+    """`_collect_bounds` plus the heat-cell extents.
+
+    Used by the signal map so the rendered image actually contains the
+    cells with samples — even if mowing has drifted beyond the catalog
+    polygon bounds.
+    """
+    inner = _collect_bounds(catalog, pose, dock)
+    xs: list[float] = [] if inner is None else [inner[0], inner[1]]
+    ys: list[float] = [] if inner is None else [inner[2], inner[3]]
+    for (cx, cy) in signal_grid.cells():
+        xs.append(cx * cell_m)
+        xs.append((cx + 1) * cell_m)
+        ys.append(cy * cell_m)
+        ys.append((cy + 1) * cell_m)
+    if not xs:
+        return None
+    return (
+        min(xs) - _BOUNDS_PAD_M,
+        max(xs) + _BOUNDS_PAD_M,
+        min(ys) - _BOUNDS_PAD_M,
+        max(ys) + _BOUNDS_PAD_M,
+    )
+
+
+def render_signal_map(
+    catalog,
+    pose: Any | None,
+    dock: Any | None,
+    signal_grid,
+    cell_m: float,
+    width: int = 1024,
+    height: int = 768,
+) -> bytes | None:
+    """Render a heat map of signal quality across the property.
+
+    v1 colors cells by their EWMA-smoothed ``horizontal_accuracy`` value
+    (lower = better RTK lock). The other three metrics (position_quality,
+    wifi_signal, lte_signal) are accumulated by the coordinator but not
+    yet surfaced here — future enhancement.
+
+    Zone outlines render on top of the heat overlay so the user can
+    correlate heat patterns with named zones, but zone *fills* are
+    omitted (the heat is the fill).
+
+    Args:
+        catalog: a ZoneCatalog (may be empty — the function still renders
+            a heat-only view if there are cells but no zones).
+        pose: live mower pose (PbPose-like) or None.
+        dock: dock position (PbPose-like) or None.
+        signal_grid: a SignalGrid instance (from signal_grid.py). If empty
+            the render falls back to the same content as `render_map` with
+            no task highlighting.
+        cell_m: side length of one signal-grid cell in meters. Must match
+            the value the SignalGrid was built with (`signal_grid.CELL_M`).
+        width, height: output dimensions in pixels.
+    """
+    bounds = _collect_bounds_with_grid(catalog, pose, dock, signal_grid, cell_m)
+    if bounds is None:
+        return None
+
+    img = Image.new("RGBA", (width, height), _BG)
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+
+    tx, ty, scale = _make_transform(bounds, width, height)
+
+    def pxs(pts: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        return [(tx(p[0]), ty(p[1])) for p in pts]
+
+    # 1) Faint grid every 5m of local frame (sits behind everything).
+    base_draw = ImageDraw.Draw(img)
+    xmin, xmax, ymin, ymax = bounds
+    gx = math.ceil(xmin / 5.0) * 5.0
+    while gx <= xmax:
+        base_draw.line([(tx(gx), 0), (tx(gx), height)], fill=_GRID, width=1)
+        gx += 5.0
+    gy = math.ceil(ymin / 5.0) * 5.0
+    while gy <= ymax:
+        base_draw.line([(0, ty(gy)), (width, ty(gy))], fill=_GRID, width=1)
+        gy += 5.0
+
+    # 2) Heat cells — one filled rect per cell that has a horizontal_accuracy
+    # EWMA value. Cells with no HA samples are skipped (some cells may only
+    # have wifi/lte data — invisible in v1, surfaced later).
+    for (cx, cy), cell in signal_grid.cells().items():
+        ha = cell.horizontal_accuracy
+        if ha is None:
+            continue
+        color = _heat_color_ha(ha)
+        wx0 = cx * cell_m
+        wy0 = cy * cell_m
+        # ty() flips y, so the world's bottom edge becomes the image's
+        # bottom in pixel coords — i.e. larger pixel-y.
+        left  = tx(wx0)
+        right = tx(wx0 + cell_m)
+        top   = ty(wy0 + cell_m)  # higher world-y → smaller pixel-y
+        bot   = ty(wy0)
+        overlay_draw.rectangle((left, top, right, bot), fill=color)
+
+    # 3) Channel fills (very faint here — the heat is the focal point).
+    for ch in getattr(catalog, "channels", []):
+        if len(ch.polygon_points) < 3:
+            continue
+        coords = pxs(ch.polygon_points)
+        fill = _DOCK_CH_FILL if ch.is_docking_channel else _INTER_CH_FILL
+        overlay_draw.polygon(coords, fill=fill)
+
+    # 4) Composite alpha overlay onto base — heat + channel fills now bake in.
+    img = Image.alpha_composite(img, overlay)
+    draw = ImageDraw.Draw(img)
+
+    # 5) Channel outlines.
+    for ch in getattr(catalog, "channels", []):
+        if len(ch.polygon_points) < 3:
+            continue
+        coords = pxs(ch.polygon_points)
+        if ch.is_docking_channel:
+            draw.line(coords + [coords[0]], fill=_DOCK_CH_OUTLINE, width=2)
+        else:
+            _draw_dashed_polygon(draw, coords, _INTER_CH_OUTLINE, width=1)
+
+    # 6) Zone outlines — drawn over the heat so users can see zone borders
+    # against the colored cells. No fill, no highlighting.
+    for z in getattr(catalog, "zones", []):
+        if len(z.polygon_points) < 3:
+            continue
+        coords = pxs(z.polygon_points)
+        draw.line(coords + [coords[0]], fill=_PLAIN_OUTLINE, width=1)
+
+    # 7) Zone labels — small, plain, just to anchor the user.
+    label_font = _load_font(12)
+    for z in getattr(catalog, "zones", []):
+        if len(z.polygon_points) < 3:
+            continue
+        if z.text_pos is not None:
+            lx, ly = tx(z.text_pos[0]), ty(z.text_pos[1])
+        else:
+            cx_w, cy_w = _polygon_centroid(z.polygon_points)
+            lx, ly = tx(cx_w), ty(cy_w)
+        label = z.name or z.hash_id
+        tw, th = _text_size(label_font, draw, label)
+        draw.rectangle(
+            (lx - tw / 2 - 3, ly - th / 2 - 2, lx + tw / 2 + 3, ly + th / 2 + 2),
+            fill=_LABEL_BG,
+        )
+        draw.text((lx - tw / 2, ly - th / 2), label, fill=_LABEL_PLAIN, font=label_font)
+
+    # 8) Dock marker.
+    if dock is not None:
+        dx, dy = tx(float(dock.x)), ty(float(dock.y))
+        draw.rectangle((dx - 5, dy - 5, dx + 5, dy + 5), fill=_DOCK_MARKER)
+
+    # 9) Mower marker — always last.
+    if pose is not None:
+        mx, my = tx(float(pose.x)), ty(float(pose.y))
+        r = 6
+        draw.ellipse((mx - r, my - r, mx + r, my + r), fill=_MOWER)
         theta = float(pose.theta)
         hx = mx + math.cos(theta) * 14
         hy = my - math.sin(theta) * 14

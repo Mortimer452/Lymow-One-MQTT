@@ -22,7 +22,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from . import map_render, state
+from . import map_render, signal_grid as _sg, state
 from .const import ACTIVE_TASK_STATUSES, DOMAIN, RTSP_PATH, RTSP_PORT
 from .coordinator import LymowCoordinator
 from .entity_base import LymowEntity
@@ -121,8 +121,62 @@ class LymowMapCamera(LymowEntity, Camera):
         )
 
 
+class LymowSignalMapCamera(LymowEntity, Camera):
+    """Heat-map view of signal quality across the property.
+
+    Renders a top-down PNG with each spatial cell colored by the EWMA
+    of `horizontal_accuracy` observed there. Built from the accumulator
+    in `coordinator.signal_grid` — see `signal_grid.py` for the data
+    model and `map_render.render_signal_map` for the rendering.
+
+    Currently only horizontal_accuracy is visualized; the coordinator
+    accumulates four metrics (RTK quality, horizontal accuracy, WiFi,
+    LTE) and additional heat layers can be added later without re-mowing.
+    """
+
+    _attr_name = "Signal map"
+
+    def __init__(self, coordinator: LymowCoordinator) -> None:
+        LymowEntity.__init__(self, coordinator, "signal_map")
+        Camera.__init__(self)
+
+    @property
+    def available(self) -> bool:
+        if not super().available:
+            return False
+        # Same gate as the map camera — without a zone catalog we have no
+        # frame of reference for the heat cells. The grid itself may still
+        # be empty (no mowing yet), in which case the render is a zone
+        # outline with no heat overlay — informative enough for a v1.
+        s = self.coordinator.state_dict
+        catalog = s.get("zone_catalog")
+        return catalog is not None and len(getattr(catalog, "zones", [])) > 0
+
+    async def async_camera_image(
+        self, width: int | None = None, height: int | None = None
+    ) -> bytes | None:
+        s = self.coordinator.state_dict
+        catalog = s.get("zone_catalog")
+        if catalog is None or not getattr(catalog, "zones", None):
+            return None
+        return await self.hass.async_add_executor_job(
+            map_render.render_signal_map,
+            catalog,
+            s.get("pose"),
+            s.get("chargingStationLoc"),
+            self.coordinator.signal_grid,
+            _sg.CELL_M,
+            width or _MAP_DEFAULT_WIDTH,
+            height or _MAP_DEFAULT_HEIGHT,
+        )
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     coord: LymowCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([LymowRtspCamera(coord), LymowMapCamera(coord)])
+    async_add_entities([
+        LymowRtspCamera(coord),
+        LymowMapCamera(coord),
+        LymowSignalMapCamera(coord),
+    ])

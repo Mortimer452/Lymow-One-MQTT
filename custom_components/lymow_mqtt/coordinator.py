@@ -17,9 +17,10 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from . import protocol, state, state_matrix, userctrl
+from . import protocol, signal_grid as _sg, state, state_matrix, userctrl
 from .auth import CognitoAuth
 from .const import (
     API_ENDPOINTS,
@@ -42,6 +43,14 @@ _COMMAND_WATCHDOG_SECONDS = 2.5
 _QUERY_MAP_WAIT_SECONDS = 3.0
 # REST online poll cadence
 _REST_POLL_INTERVAL = timedelta(minutes=15)
+
+# Signal-grid persistence — Store API has no built-in throttling, and
+# `async_delay_save` resets its timer on each call (debounce, not
+# periodic), so for continuous pboutput-driven updates we save explicitly
+# every Nth sample to bound disk traffic without losing too much history
+# on an unclean shutdown.
+_SIGNAL_GRID_STORE_VERSION = 1
+_SIGNAL_GRID_SAVE_EVERY_N_SAMPLES = 20
 
 
 class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -110,8 +119,29 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._shutting_down: bool = False
         self._reconnecting: bool = False
 
+        # Signal-quality heat-map accumulator (see signal_grid.py). The
+        # grid lives on the coordinator so all entities (the signal-map
+        # camera, future heat-overlay variants) read the same instance.
+        # Loaded from Store in `async_setup`.
+        self.signal_grid: _sg.SignalGrid = _sg.SignalGrid()
+        self._signal_grid_store: Store = Store(
+            hass, _SIGNAL_GRID_STORE_VERSION, f"{DOMAIN}_heatmap_{thing_name}"
+        )
+        self._signal_sample_count: int = 0
+
     async def async_setup(self) -> None:
         """Connect MQTT, fire startup queries, kick off REST poll."""
+        # Restore the signal-quality heat-map grid from disk before the
+        # MQTT subscriber starts so first-pboutput samples land on top of
+        # historical context rather than a blank grid.
+        try:
+            self.signal_grid = _sg.SignalGrid.from_dict(
+                await self._signal_grid_store.async_load()
+            )
+        except Exception:
+            _LOGGER.exception("Failed to load signal grid from Store; starting fresh")
+            self.signal_grid = _sg.SignalGrid()
+
         # Initial REST device-info call (also gives us the IP for camera)
         await self._do_rest_poll()
 
@@ -156,6 +186,12 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 pass
         if self.mqtt:
             await self.mqtt.disconnect()
+        # Final flush of the signal grid so any in-flight samples since
+        # the last periodic save make it to disk.
+        try:
+            await self._signal_grid_store.async_save(self.signal_grid.to_dict())
+        except Exception:
+            _LOGGER.exception("Failed to save signal grid on unload")
 
     @property
     def state_dict(self) -> dict[str, Any]:
@@ -244,6 +280,11 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # (so zone renames done in the app during a mow get picked up after).
         self._maybe_refire_query_map(cleanreport_arrived=cleanreport_arrived)
 
+        # Signal-quality heat map — fold this broadcast's (pose, signal)
+        # readings into the spatial grid. Cheap (one cell update) and
+        # bounded in size by yard footprint. See signal_grid.py.
+        self._record_signal_sample()
+
         # Notify watchdog waiters. We only set() here; the waiter does the
         # clear() before each await so a set() between predicate-check and
         # wait() can't be lost.
@@ -251,6 +292,73 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Notify HA entities
         self.async_set_updated_data(self._state)
+
+    def _record_signal_sample(self) -> None:
+        """Fold this broadcast's (pose, signal) readings into the heat-map grid.
+
+        Pulled from the merged state dict rather than the raw protobuf so
+        sticky-merged fields are picked up correctly (e.g. localizationInfo
+        is a snapshot field that always lands, but defensive None checks
+        cover edge cases like the first few broadcasts after MQTT reconnect).
+
+        Skips entirely if there's no pose to anchor the sample to, or if
+        all four metric values are missing (nothing to fold in). Triggers
+        a Store write every Nth recorded sample to bound disk traffic.
+        """
+        pose = self._state.get("pose")
+        if pose is None:
+            return
+        try:
+            px = float(pose.x)
+            py = float(pose.y)
+        except (AttributeError, TypeError, ValueError):
+            return
+        # Reject non-finite pose values (NaN can leak in if the firmware
+        # ever emits an unset float in pose; would silently produce a
+        # garbage cell key otherwise).
+        if not (px == px and py == py):  # NaN check without importing math
+            return
+
+        li = self._state.get("localizationInfo")
+        ri = self._state.get("robotInfo")
+        ha = (
+            float(li.horizontalAccuracy)
+            if li is not None and li.HasField("horizontalAccuracy")
+            else None
+        )
+        pq = (
+            int(li.positionQuality)
+            if li is not None and li.HasField("positionQuality")
+            else None
+        )
+        wifi = (
+            int(ri.wifiSignalQuality)
+            if ri is not None and ri.HasField("wifiSignalQuality")
+            else None
+        )
+        lte = (
+            int(ri.lteSignalQuality)
+            if ri is not None and ri.HasField("lteSignalQuality")
+            else None
+        )
+        if ha is None and pq is None and wifi is None and lte is None:
+            return
+
+        self.signal_grid.record(
+            px, py,
+            horizontal_accuracy=ha,
+            position_quality=pq,
+            wifi_signal=wifi,
+            lte_signal=lte,
+        )
+        self._signal_sample_count += 1
+        if self._signal_sample_count % _SIGNAL_GRID_SAVE_EVERY_N_SAMPLES == 0:
+            # async_create_task because async_save is async but this method
+            # is sync. The Store API serializes concurrent saves so even
+            # back-to-back kicks are safe.
+            self.hass.async_create_task(
+                self._signal_grid_store.async_save(self.signal_grid.to_dict())
+            )
 
     def _maybe_refire_query_map(self, cleanreport_arrived: bool = False) -> None:
         """Fire another QUERY_MAP under any of three conditions:
