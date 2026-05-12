@@ -190,14 +190,21 @@ class TestRenderMap:
         assert out.startswith(PNG_MAGIC)
 
 
-class TestRenderSignalMap:
+class TestRenderMapWithHeatOverlay:
+    """`render_map` exercising the optional ``signal_grid`` / ``cell_m``
+    kwargs — when provided, the heat overlay + legend render on top of
+    the zone outlines. Zone fills are always omitted (heat reads through).
+    """
+
     def test_empty_grid_with_zones_still_renders(self):
         from lymow_mqtt import signal_grid as sg
         catalog = _catalog_with_zones(_square_zone("Front"))
-        out = map_render.render_signal_map(
+        out = map_render.render_map(
             catalog=catalog,
             pose=None,
             dock=None,
+            current_zone_name=None,
+            task_active=False,
             signal_grid=sg.SignalGrid(),
             cell_m=sg.CELL_M,
             width=400,
@@ -217,10 +224,12 @@ class TestRenderSignalMap:
         grid.record(3.0, 3.0, horizontal_accuracy=0.15)
         grid.record(4.0, 4.0, horizontal_accuracy=0.30)
         grid.record(4.5, 4.5, horizontal_accuracy=2.50)
-        out = map_render.render_signal_map(
+        out = map_render.render_map(
             catalog=catalog,
             pose=FakePose(x=2.5, y=2.5, theta=0.0),
             dock=FakePose(x=0.0, y=0.0),
+            current_zone_name="Front",
+            task_active=True,
             signal_grid=grid,
             cell_m=sg.CELL_M,
             width=512,
@@ -231,10 +240,12 @@ class TestRenderSignalMap:
 
     def test_empty_everything_returns_none(self):
         from lymow_mqtt import signal_grid as sg
-        out = map_render.render_signal_map(
+        out = map_render.render_map(
             catalog=ZoneCatalog(),
             pose=None,
             dock=None,
+            current_zone_name=None,
+            task_active=False,
             signal_grid=sg.SignalGrid(),
             cell_m=sg.CELL_M,
         )
@@ -247,10 +258,12 @@ class TestRenderSignalMap:
         from lymow_mqtt import signal_grid as sg
         grid = sg.SignalGrid()
         grid.record(1.0, 1.0, horizontal_accuracy=0.05)
-        out = map_render.render_signal_map(
+        out = map_render.render_map(
             catalog=ZoneCatalog(),
             pose=None,
             dock=None,
+            current_zone_name=None,
+            task_active=False,
             signal_grid=grid,
             cell_m=sg.CELL_M,
             width=200,

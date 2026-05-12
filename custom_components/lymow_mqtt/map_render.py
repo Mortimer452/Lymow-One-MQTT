@@ -225,46 +225,100 @@ def _text_size(font: Any, draw: ImageDraw.ImageDraw, text: str) -> tuple[int, in
         return (len(text) * 6, 11)
 
 
+def _extend_bounds_with_grid(
+    inner: tuple[float, float, float, float] | None,
+    signal_grid,
+    cell_m: float,
+) -> tuple[float, float, float, float] | None:
+    """Widen `_collect_bounds` to also enclose every heat cell.
+
+    Used so a heat overlay drawn beyond zone-polygon bounds (e.g. samples
+    taken during initial mapping when the catalog was incomplete) is
+    actually visible in the rendered image.
+    """
+    xs: list[float] = [] if inner is None else [inner[0], inner[1]]
+    ys: list[float] = [] if inner is None else [inner[2], inner[3]]
+    for (cx, cy) in signal_grid.cells():
+        xs.append(cx * cell_m)
+        xs.append((cx + 1) * cell_m)
+        ys.append(cy * cell_m)
+        ys.append((cy + 1) * cell_m)
+    if not xs:
+        return None
+    return (
+        min(xs) - _BOUNDS_PAD_M,
+        max(xs) + _BOUNDS_PAD_M,
+        min(ys) - _BOUNDS_PAD_M,
+        max(ys) + _BOUNDS_PAD_M,
+    )
+
+
 def render_map(
     catalog,
     pose: Any | None,
     dock: Any | None,
     current_zone_name: str | None,
     task_active: bool,
+    *,
+    signal_grid: Any | None = None,
+    cell_m: float | None = None,
     width: int = 1024,
     height: int = 768,
 ) -> bytes | None:
-    """Render a PNG of the lawn map and return its bytes.
+    """Render the combined lawn map: heat overlay + outline-only zone status.
 
-    Returns None if the catalog has nothing renderable (no zones AND no
-    pose AND no dock) — the caller should turn that into a stub image or
-    a None response.
+    Layers stack in this order:
+
+    1. Faint reference grid every 5m.
+    2. Signal-quality heat cells (only when ``signal_grid`` is provided)
+       — each cell with a recorded ``horizontal_accuracy`` value gets a
+       semi-transparent colored rectangle. See ``_heat_color_ha`` for the
+       palette, ``_draw_heat_legend`` for the bottom-left legend.
+    3. Channel fills (faint).
+    4. (Alpha overlay composited onto base here.)
+    5. Channel outlines (dashed inter-zone, solid docking).
+    6. Zone outlines — coloured by status, with the fills removed entirely
+       so the heat layer stays visible underneath. The status tiers are:
+       - **pose** — orange thick outline + ``> N: name`` label, where the
+         mower is physically inside the zone right now.
+       - **task** — green medium outline + ``N: name`` label, where
+         ``mow_order > 0`` AND ``task_active`` is True.
+       - **plain** — muted slate thin outline.
+       Orange wins over green when both apply.
+    7. Zone labels — sit on a backing pill for legibility against busy
+       heat areas, coloured to match the zone's tier.
+    8. Dock marker.
+    9. Mower marker (drawn last so the marker is never obscured).
+    10. Heat legend (only when a signal_grid was provided).
 
     Args:
         catalog: a ZoneCatalog (from protocol.parse_zone_catalog).
-        pose: an object with float attributes x, y, theta (radians).
-              None if no pose is known yet.
-        dock: an object with float attributes x, y (theta ignored).
-              None if no dock location is known yet.
-        current_zone_name: the name of the zone the mower is physically
-              inside right now, per pose-in-polygon — caller derives via
-              state.derive_current_zone(). None when between zones or
-              when pose is unknown.
-        task_active: True iff workStatus indicates an in-progress mow
-              task (caller checks against const.ACTIVE_TASK_STATUSES).
-              Gates the green "current task" highlight.
-        width, height: output image dimensions in pixels. HA passes None
-              sometimes — caller should substitute sensible defaults.
+        pose: PbPose-like with x, y, theta (radians). None if unknown.
+        dock: PbPose-like with x, y. None if unknown.
+        current_zone_name: name of the zone the mower is physically inside.
+            Derived by the caller via state.derive_current_zone(). None
+            when between zones / when pose is unknown.
+        task_active: True iff workStatus indicates an in-progress mow task
+            (caller checks against const.ACTIVE_TASK_STATUSES).
+        signal_grid: optional SignalGrid (from signal_grid.py). When None,
+            no heat layer / no legend; the function renders zones-only.
+        cell_m: side length of one signal-grid cell in meters. Required
+            when ``signal_grid`` is not None — pass ``signal_grid.CELL_M``.
+        width, height: output dimensions in pixels.
+
+    Returns None if nothing in the catalog / pose / dock / signal_grid is
+    placeable — callers should treat as "no image available yet".
     """
     bounds = _collect_bounds(catalog, pose, dock)
+    if signal_grid is not None and cell_m is not None:
+        bounds = _extend_bounds_with_grid(bounds, signal_grid, cell_m)
     if bounds is None:
         return None
 
     img = Image.new("RGBA", (width, height), _BG)
-    # Polygon fills accumulate on an alpha-blended overlay so semi-transparent
-    # fills compose correctly (Pillow's draw.polygon(fill=...) with alpha
-    # overwrites rather than blends; one composite at the end is cheaper and
-    # simpler than per-shape composites).
+    # Heat cells + channel fills compose on an alpha overlay so semi-
+    # transparent fills blend correctly. One composite at the end is
+    # cheaper than per-shape composites.
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     overlay_draw = ImageDraw.Draw(overlay)
 
@@ -273,55 +327,48 @@ def render_map(
     def pxs(pts: list[tuple[float, float]]) -> list[tuple[float, float]]:
         return [(tx(p[0]), ty(p[1])) for p in pts]
 
-    # 1) Faint grid every 5 meters of local frame.
+    # 1) Faint grid every 5m of local frame.
     base_draw = ImageDraw.Draw(img)
     xmin, xmax, ymin, ymax = bounds
-    gx_start = math.ceil(xmin / 5.0) * 5.0
-    x = gx_start
-    while x <= xmax:
-        base_draw.line([(tx(x), 0), (tx(x), height)], fill=_GRID, width=1)
-        x += 5.0
-    gy_start = math.ceil(ymin / 5.0) * 5.0
-    y = gy_start
-    while y <= ymax:
-        base_draw.line([(0, ty(y)), (width, ty(y))], fill=_GRID, width=1)
-        y += 5.0
+    gx = math.ceil(xmin / 5.0) * 5.0
+    while gx <= xmax:
+        base_draw.line([(tx(gx), 0), (tx(gx), height)], fill=_GRID, width=1)
+        gx += 5.0
+    gy = math.ceil(ymin / 5.0) * 5.0
+    while gy <= ymax:
+        base_draw.line([(0, ty(gy)), (width, ty(gy))], fill=_GRID, width=1)
+        gy += 5.0
 
-    # 2) Channels first so zone outlines draw on top.
+    # 2) Heat cells (only when a grid was provided and has HA samples).
+    if signal_grid is not None and cell_m is not None:
+        for (cx, cy), cell in signal_grid.cells().items():
+            ha = cell.horizontal_accuracy
+            if ha is None:
+                continue
+            color = _heat_color_ha(ha)
+            wx0 = cx * cell_m
+            wy0 = cy * cell_m
+            # ty() flips y — the world's lower y-edge maps to a larger
+            # pixel-y, so the rect's `top` is the higher-y world corner.
+            left  = tx(wx0)
+            right = tx(wx0 + cell_m)
+            top   = ty(wy0 + cell_m)
+            bot   = ty(wy0)
+            overlay_draw.rectangle((left, top, right, bot), fill=color)
+
+    # 3) Channel fills.
     for ch in getattr(catalog, "channels", []):
         if len(ch.polygon_points) < 3:
             continue
         coords = pxs(ch.polygon_points)
-        if ch.is_docking_channel:
-            overlay_draw.polygon(coords, fill=_DOCK_CH_FILL)
-        else:
-            overlay_draw.polygon(coords, fill=_INTER_CH_FILL)
-
-    # 3) Zone fills (deferred outlines until after composite so they're crisp).
-    zone_render: list[tuple[Any, list[tuple[float, float]], str]] = []
-    for z in getattr(catalog, "zones", []):
-        if len(z.polygon_points) < 3:
-            continue
-        is_pose_zone = current_zone_name is not None and z.name == current_zone_name
-        is_in_task = task_active and z.mow_order > 0
-        if is_pose_zone:
-            tier = "pose"
-            fill = _POSE_FILL
-        elif is_in_task:
-            tier = "task"
-            fill = _TASK_FILL
-        else:
-            tier = "plain"
-            fill = _PLAIN_FILL
-        coords = pxs(z.polygon_points)
+        fill = _DOCK_CH_FILL if ch.is_docking_channel else _INTER_CH_FILL
         overlay_draw.polygon(coords, fill=fill)
-        zone_render.append((z, coords, tier))
 
-    # 4) Composite the alpha overlay onto the base in one shot.
+    # 4) Composite the alpha overlay onto the base.
     img = Image.alpha_composite(img, overlay)
     draw = ImageDraw.Draw(img)
 
-    # 5) Channel outlines (dashed for inter-zone, solid for the docking one).
+    # 5) Channel outlines.
     for ch in getattr(catalog, "channels", []):
         if len(ch.polygon_points) < 3:
             continue
@@ -331,28 +378,34 @@ def render_map(
         else:
             _draw_dashed_polygon(draw, coords, _INTER_CH_OUTLINE, width=1)
 
-    # 6) Zone outlines.
-    for z, coords, tier in zone_render:
-        if tier == "pose":
-            outline = _POSE_OUTLINE
-            line_w = 3
-        elif tier == "task":
-            outline = _TASK_OUTLINE
-            line_w = 2
+    # 6) Zone outlines — coloured by status, NO fills (heat layer wins).
+    zone_render: list[tuple[Any, list[tuple[float, float]], str]] = []
+    for z in getattr(catalog, "zones", []):
+        if len(z.polygon_points) < 3:
+            continue
+        coords = pxs(z.polygon_points)
+        is_pose_zone = current_zone_name is not None and z.name == current_zone_name
+        is_in_task = task_active and z.mow_order > 0
+        if is_pose_zone:
+            tier = "pose"
+            outline, line_w = _POSE_OUTLINE, 3
+        elif is_in_task:
+            tier = "task"
+            outline, line_w = _TASK_OUTLINE, 2
         else:
-            outline = _PLAIN_OUTLINE
-            line_w = 1
+            tier = "plain"
+            outline, line_w = _PLAIN_OUTLINE, 1
         draw.line(coords + [coords[0]], fill=outline, width=line_w)
+        zone_render.append((z, coords, tier))
 
-    # 7) Zone labels — drawn before the mower marker so the marker isn't
-    # obscured by its own zone's label pill.
+    # 7) Zone labels — coloured to match outline tier, with backing pill.
     label_font = _load_font(12)
     for z, coords, tier in zone_render:
         if z.text_pos is not None:
             lx, ly = tx(z.text_pos[0]), ty(z.text_pos[1])
         else:
-            cx, cy = _polygon_centroid(z.polygon_points)
-            lx, ly = tx(cx), ty(cy)
+            cx_w, cy_w = _polygon_centroid(z.polygon_points)
+            lx, ly = tx(cx_w), ty(cy_w)
 
         order_prefix = f"{z.mow_order}: " if z.mow_order > 0 else ""
         base_name = z.name or z.hash_id
@@ -369,7 +422,6 @@ def render_map(
             color = _LABEL_PLAIN
 
         tw, th = _text_size(label_font, draw, label)
-        # Centered around (lx, ly), with a subtle backing pill for legibility.
         x0 = lx - tw / 2 - 3
         x1 = lx + tw / 2 + 3
         y0 = ly - th / 2 - 2
@@ -377,23 +429,25 @@ def render_map(
         draw.rectangle((x0, y0, x1, y1), fill=_LABEL_BG)
         draw.text((lx - tw / 2, ly - th / 2), label, fill=color, font=label_font)
 
-    # 8) Dock marker — sits above labels (yellow square is the dock).
+    # 8) Dock marker.
     if dock is not None:
         dx, dy = tx(float(dock.x)), ty(float(dock.y))
         draw.rectangle((dx - 5, dy - 5, dx + 5, dy + 5), fill=_DOCK_MARKER)
 
-    # 9) Mower marker — always rendered last so it's visible on top of any
-    # labels or fills it happens to sit on (matches the harness's draw order).
+    # 9) Mower marker — always last so it's visible on top of any labels
+    # or heat cells it happens to sit on.
     if pose is not None:
         mx, my = tx(float(pose.x)), ty(float(pose.y))
         r = 6
         draw.ellipse((mx - r, my - r, mx + r, my + r), fill=_MOWER)
-        # Pose theta is in radians, mower frame x→east / y→north. The image
-        # y-axis is flipped, so the heading vector also flips its y term.
         theta = float(pose.theta)
         hx = mx + math.cos(theta) * 14
         hy = my - math.sin(theta) * 14
         draw.line([(mx, my), (hx, hy)], fill=_MOWER_HEADING, width=3)
+
+    # 10) Heat-map legend (only when we drew a heat layer).
+    if signal_grid is not None:
+        _draw_heat_legend(img)
 
     buf = io.BytesIO()
     img.convert("RGB").save(buf, format="PNG", optimize=True)
@@ -490,179 +544,3 @@ def _draw_heat_legend(
         draw.text((x, tick_y), label, fill=_LABEL_PLAIN, font=font)
 
 
-def _collect_bounds_with_grid(
-    catalog,
-    pose,
-    dock,
-    signal_grid,
-    cell_m: float,
-) -> tuple[float, float, float, float] | None:
-    """`_collect_bounds` plus the heat-cell extents.
-
-    Used by the signal map so the rendered image actually contains the
-    cells with samples — even if mowing has drifted beyond the catalog
-    polygon bounds.
-    """
-    inner = _collect_bounds(catalog, pose, dock)
-    xs: list[float] = [] if inner is None else [inner[0], inner[1]]
-    ys: list[float] = [] if inner is None else [inner[2], inner[3]]
-    for (cx, cy) in signal_grid.cells():
-        xs.append(cx * cell_m)
-        xs.append((cx + 1) * cell_m)
-        ys.append(cy * cell_m)
-        ys.append((cy + 1) * cell_m)
-    if not xs:
-        return None
-    return (
-        min(xs) - _BOUNDS_PAD_M,
-        max(xs) + _BOUNDS_PAD_M,
-        min(ys) - _BOUNDS_PAD_M,
-        max(ys) + _BOUNDS_PAD_M,
-    )
-
-
-def render_signal_map(
-    catalog,
-    pose: Any | None,
-    dock: Any | None,
-    signal_grid,
-    cell_m: float,
-    width: int = 1024,
-    height: int = 768,
-) -> bytes | None:
-    """Render a heat map of signal quality across the property.
-
-    v1 colors cells by their EWMA-smoothed ``horizontal_accuracy`` value
-    (lower = better RTK lock). The other three metrics (position_quality,
-    wifi_signal, lte_signal) are accumulated by the coordinator but not
-    yet surfaced here — future enhancement.
-
-    Zone outlines render on top of the heat overlay so the user can
-    correlate heat patterns with named zones, but zone *fills* are
-    omitted (the heat is the fill).
-
-    Args:
-        catalog: a ZoneCatalog (may be empty — the function still renders
-            a heat-only view if there are cells but no zones).
-        pose: live mower pose (PbPose-like) or None.
-        dock: dock position (PbPose-like) or None.
-        signal_grid: a SignalGrid instance (from signal_grid.py). If empty
-            the render falls back to the same content as `render_map` with
-            no task highlighting.
-        cell_m: side length of one signal-grid cell in meters. Must match
-            the value the SignalGrid was built with (`signal_grid.CELL_M`).
-        width, height: output dimensions in pixels.
-    """
-    bounds = _collect_bounds_with_grid(catalog, pose, dock, signal_grid, cell_m)
-    if bounds is None:
-        return None
-
-    img = Image.new("RGBA", (width, height), _BG)
-    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    overlay_draw = ImageDraw.Draw(overlay)
-
-    tx, ty, scale = _make_transform(bounds, width, height)
-
-    def pxs(pts: list[tuple[float, float]]) -> list[tuple[float, float]]:
-        return [(tx(p[0]), ty(p[1])) for p in pts]
-
-    # 1) Faint grid every 5m of local frame (sits behind everything).
-    base_draw = ImageDraw.Draw(img)
-    xmin, xmax, ymin, ymax = bounds
-    gx = math.ceil(xmin / 5.0) * 5.0
-    while gx <= xmax:
-        base_draw.line([(tx(gx), 0), (tx(gx), height)], fill=_GRID, width=1)
-        gx += 5.0
-    gy = math.ceil(ymin / 5.0) * 5.0
-    while gy <= ymax:
-        base_draw.line([(0, ty(gy)), (width, ty(gy))], fill=_GRID, width=1)
-        gy += 5.0
-
-    # 2) Heat cells — one filled rect per cell that has a horizontal_accuracy
-    # EWMA value. Cells with no HA samples are skipped (some cells may only
-    # have wifi/lte data — invisible in v1, surfaced later).
-    for (cx, cy), cell in signal_grid.cells().items():
-        ha = cell.horizontal_accuracy
-        if ha is None:
-            continue
-        color = _heat_color_ha(ha)
-        wx0 = cx * cell_m
-        wy0 = cy * cell_m
-        # ty() flips y, so the world's bottom edge becomes the image's
-        # bottom in pixel coords — i.e. larger pixel-y.
-        left  = tx(wx0)
-        right = tx(wx0 + cell_m)
-        top   = ty(wy0 + cell_m)  # higher world-y → smaller pixel-y
-        bot   = ty(wy0)
-        overlay_draw.rectangle((left, top, right, bot), fill=color)
-
-    # 3) Channel fills (very faint here — the heat is the focal point).
-    for ch in getattr(catalog, "channels", []):
-        if len(ch.polygon_points) < 3:
-            continue
-        coords = pxs(ch.polygon_points)
-        fill = _DOCK_CH_FILL if ch.is_docking_channel else _INTER_CH_FILL
-        overlay_draw.polygon(coords, fill=fill)
-
-    # 4) Composite alpha overlay onto base — heat + channel fills now bake in.
-    img = Image.alpha_composite(img, overlay)
-    draw = ImageDraw.Draw(img)
-
-    # 5) Channel outlines.
-    for ch in getattr(catalog, "channels", []):
-        if len(ch.polygon_points) < 3:
-            continue
-        coords = pxs(ch.polygon_points)
-        if ch.is_docking_channel:
-            draw.line(coords + [coords[0]], fill=_DOCK_CH_OUTLINE, width=2)
-        else:
-            _draw_dashed_polygon(draw, coords, _INTER_CH_OUTLINE, width=1)
-
-    # 6) Zone outlines — drawn over the heat so users can see zone borders
-    # against the colored cells. No fill, no highlighting.
-    for z in getattr(catalog, "zones", []):
-        if len(z.polygon_points) < 3:
-            continue
-        coords = pxs(z.polygon_points)
-        draw.line(coords + [coords[0]], fill=_PLAIN_OUTLINE, width=1)
-
-    # 7) Zone labels — small, plain, just to anchor the user.
-    label_font = _load_font(12)
-    for z in getattr(catalog, "zones", []):
-        if len(z.polygon_points) < 3:
-            continue
-        if z.text_pos is not None:
-            lx, ly = tx(z.text_pos[0]), ty(z.text_pos[1])
-        else:
-            cx_w, cy_w = _polygon_centroid(z.polygon_points)
-            lx, ly = tx(cx_w), ty(cy_w)
-        label = z.name or z.hash_id
-        tw, th = _text_size(label_font, draw, label)
-        draw.rectangle(
-            (lx - tw / 2 - 3, ly - th / 2 - 2, lx + tw / 2 + 3, ly + th / 2 + 2),
-            fill=_LABEL_BG,
-        )
-        draw.text((lx - tw / 2, ly - th / 2), label, fill=_LABEL_PLAIN, font=label_font)
-
-    # 8) Dock marker.
-    if dock is not None:
-        dx, dy = tx(float(dock.x)), ty(float(dock.y))
-        draw.rectangle((dx - 5, dy - 5, dx + 5, dy + 5), fill=_DOCK_MARKER)
-
-    # 9) Mower marker — always last.
-    if pose is not None:
-        mx, my = tx(float(pose.x)), ty(float(pose.y))
-        r = 6
-        draw.ellipse((mx - r, my - r, mx + r, my + r), fill=_MOWER)
-        theta = float(pose.theta)
-        hx = mx + math.cos(theta) * 14
-        hy = my - math.sin(theta) * 14
-        draw.line([(mx, my), (hx, hy)], fill=_MOWER_HEADING, width=3)
-
-    # 10) Heat-map legend in the bottom-left so the user can decode colors
-    # without having to leave the dashboard.
-    _draw_heat_legend(img)
-
-    buf = io.BytesIO()
-    img.convert("RGB").save(buf, format="PNG", optimize=True)
-    return buf.getvalue()

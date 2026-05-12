@@ -4,14 +4,22 @@ Two entities live here:
 
 - `LymowRtspCamera` — RTSP stream from the robot's onboard camera at
   rtsp://<ip>:10022/h264ESVideoTest (arch.md §4d). The IP is derived
-  from MQTT deviceInfo broadcasts (post-completion bursts) or REST
-  /get-device-info polls. stream_source updates whenever the IP changes.
+  from MQTT deviceInfo broadcasts or REST /get-device-info polls.
+  stream_source updates whenever the IP changes.
 
-- `LymowMapCamera` — server-rendered top-down lawn map (PNG) showing
-  zones, channels, dock, and live mower position with task / current-zone
-  highlighting per arch.md §8b. No live video — just a freshly-rendered
-  image each time HA pulls. Available whenever the zone catalog has been
-  populated (one shot at startup via QUERY_MAP).
+- `LymowMapCamera` — server-rendered top-down lawn map (PNG snapshot,
+  not a stream). Combines:
+  * Zone outlines with task / current-zone status colouring (orange
+    for the zone the mower is physically inside, green for zones in
+    the current task, plain for everything else).
+  * A heat overlay coloured by the EWMA-smoothed
+    `horizontal_accuracy` accumulated per cell in
+    `coordinator.signal_grid`. Cells with no samples are simply not
+    drawn.
+  * A bottom-left legend explaining the heat-color ramp.
+  Available whenever the zone catalog has been populated (one shot at
+  startup via QUERY_MAP). The signal grid may be empty (no mowing
+  yet) — in that case zone outlines + markers render without heat.
 """
 from __future__ import annotations
 
@@ -67,12 +75,11 @@ class LymowRtspCamera(LymowEntity, Camera):
 
 
 class LymowMapCamera(LymowEntity, Camera):
-    """Server-rendered lawn map (PNG snapshot, no stream).
+    """Server-rendered combined map: zone status + signal-quality heat.
 
     Pulls happen at whatever cadence the Lovelace card chose (~10s by
-    default for Picture Entity cards). The underlying mower state changes
-    much more slowly than that in this integration's passive design, so
-    most pulls produce an identical PNG — which is fine.
+    default for Picture Entity cards). State changes more slowly than
+    that in passive mode, so most pulls produce an identical PNG.
     """
 
     _attr_name = "Map"
@@ -83,11 +90,11 @@ class LymowMapCamera(LymowEntity, Camera):
 
     @property
     def available(self) -> bool:
-        # Standard online check from the base class first.
+        # Standard online check first, then gate on having at least one
+        # zone in the catalog. Without zones there's nothing meaningful
+        # to anchor the heat layer / outlines to.
         if not super().available:
             return False
-        # Then gate on having at least one zone in the catalog. Without
-        # zones there's nothing meaningful to render.
         s = self.coordinator.state_dict
         catalog = s.get("zone_catalog")
         return catalog is not None and len(getattr(catalog, "zones", [])) > 0
@@ -110,65 +117,47 @@ class LymowMapCamera(LymowEntity, Camera):
         # Pillow is sync and polygon rasterization can take a few ms on
         # busy maps — keep it out of the event loop.
         return await self.hass.async_add_executor_job(
-            map_render.render_map,
+            _render_map_kwargs,
             catalog,
             pose,
             dock,
             current_zone,
             task_active,
-            width or _MAP_DEFAULT_WIDTH,
-            height or _MAP_DEFAULT_HEIGHT,
-        )
-
-
-class LymowSignalMapCamera(LymowEntity, Camera):
-    """Heat-map view of signal quality across the property.
-
-    Renders a top-down PNG with each spatial cell colored by the EWMA
-    of `horizontal_accuracy` observed there. Built from the accumulator
-    in `coordinator.signal_grid` — see `signal_grid.py` for the data
-    model and `map_render.render_signal_map` for the rendering.
-
-    Currently only horizontal_accuracy is visualized; the coordinator
-    accumulates four metrics (RTK quality, horizontal accuracy, WiFi,
-    LTE) and additional heat layers can be added later without re-mowing.
-    """
-
-    _attr_name = "Signal map"
-
-    def __init__(self, coordinator: LymowCoordinator) -> None:
-        LymowEntity.__init__(self, coordinator, "signal_map")
-        Camera.__init__(self)
-
-    @property
-    def available(self) -> bool:
-        if not super().available:
-            return False
-        # Same gate as the map camera — without a zone catalog we have no
-        # frame of reference for the heat cells. The grid itself may still
-        # be empty (no mowing yet), in which case the render is a zone
-        # outline with no heat overlay — informative enough for a v1.
-        s = self.coordinator.state_dict
-        catalog = s.get("zone_catalog")
-        return catalog is not None and len(getattr(catalog, "zones", [])) > 0
-
-    async def async_camera_image(
-        self, width: int | None = None, height: int | None = None
-    ) -> bytes | None:
-        s = self.coordinator.state_dict
-        catalog = s.get("zone_catalog")
-        if catalog is None or not getattr(catalog, "zones", None):
-            return None
-        return await self.hass.async_add_executor_job(
-            map_render.render_signal_map,
-            catalog,
-            s.get("pose"),
-            s.get("chargingStationLoc"),
             self.coordinator.signal_grid,
             _sg.CELL_M,
             width or _MAP_DEFAULT_WIDTH,
             height or _MAP_DEFAULT_HEIGHT,
         )
+
+
+def _render_map_kwargs(
+    catalog,
+    pose,
+    dock,
+    current_zone,
+    task_active,
+    signal_grid,
+    cell_m,
+    width,
+    height,
+) -> bytes | None:
+    """Adapter so the executor-job call site can pass positional args.
+
+    `map_render.render_map` takes ``signal_grid`` / ``cell_m`` / ``width``
+    / ``height`` as keyword-only, which `async_add_executor_job` can't
+    target directly (it only forwards positional args).
+    """
+    return map_render.render_map(
+        catalog,
+        pose,
+        dock,
+        current_zone,
+        task_active,
+        signal_grid=signal_grid,
+        cell_m=cell_m,
+        width=width,
+        height=height,
+    )
 
 
 async def async_setup_entry(
@@ -178,5 +167,4 @@ async def async_setup_entry(
     async_add_entities([
         LymowRtspCamera(coord),
         LymowMapCamera(coord),
-        LymowSignalMapCamera(coord),
     ])
