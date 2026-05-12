@@ -180,6 +180,78 @@ def merge_pboutput(state_dict: dict[str, Any], msg) -> None:
         state_dict["warningCodes"] = list(msg.warningCodes)
 
 
+# Sentinel key for the cached "which zone polygon contains the live pose"
+# hash_id. Populated by `compute_current_zone_cache` at pboutput-merge time
+# and consumed by `zone_at_pose` / `derive_current_zone` / per-zone entity
+# attributes so we don't run N polygon-tests N times per state refresh.
+# The leading underscore signals "internal derived state, not for export".
+_CURRENT_ZONE_HASH_KEY = "_current_zone_hash_id"
+
+
+def compute_current_zone_cache(state_dict: dict[str, Any]) -> str | None:
+    """Run the pose-in-polygon walk once and stash the result in state.
+
+    Called by the coordinator after each pboutput merge. All downstream
+    consumers (current_zone sensor, per-zone "mower_in_zone" attribute,
+    active_cut_config, map camera task-highlight gate) then look up the
+    cached value instead of independently re-walking the catalog. For a
+    typical 15-zone yard that's the difference between 1 polygon test per
+    pboutput and 15+ per refresh cycle.
+
+    Storage shape: ``state_dict[_CURRENT_ZONE_HASH_KEY]`` is set to the
+    hash_id of the containing zone, or None if pose is outside every
+    polygon. Key absent means "cache not populated yet" — consumers fall
+    back to a live walk in that case (e.g. unit tests that bypass the
+    coordinator).
+    """
+    pose = state_dict.get("pose")
+    catalog = state_dict.get("zone_catalog")
+    if pose is None or catalog is None:
+        state_dict[_CURRENT_ZONE_HASH_KEY] = None
+        return None
+    # Mirror derive_current_zone's sort: in the (theoretical) case where
+    # polygons overlap, prefer the in-task zone so the cache result is
+    # consistent with what derive_current_zone would have returned on its
+    # own. Zones don't overlap in practice but the sort is cheap.
+    zones = sorted(catalog.zones, key=lambda z: (z.mow_order == 0, z.mow_order))
+    for zone in zones:
+        if zone.polygon_points and point_in_polygon(pose.x, pose.y, zone.polygon_points):
+            state_dict[_CURRENT_ZONE_HASH_KEY] = zone.hash_id
+            return zone.hash_id
+    state_dict[_CURRENT_ZONE_HASH_KEY] = None
+    return None
+
+
+def zone_at_pose(state_dict: dict[str, Any]):
+    """Return the ZoneInfo whose polygon contains the live pose, or None.
+
+    Reads the cache populated by ``compute_current_zone_cache`` when the
+    coordinator's pboutput handler has run. Falls back to a live walk if
+    the cache is absent (test fixtures, fresh state_dict bypassing the
+    coordinator). The fall-back path does NOT update the cache —
+    coordinator ownership of cache writes is the only invariant we
+    maintain to keep the fast path predictable.
+    """
+    catalog = state_dict.get("zone_catalog")
+    if catalog is None:
+        return None
+    if _CURRENT_ZONE_HASH_KEY in state_dict:
+        cached = state_dict[_CURRENT_ZONE_HASH_KEY]
+        if cached is None:
+            return None
+        return catalog.zones_by_hashid.get(cached)
+    # Cache not populated — fall back to a live walk. Same sort as the
+    # cache writer so the result is consistent across both paths.
+    pose = state_dict.get("pose")
+    if pose is None:
+        return None
+    zones = sorted(catalog.zones, key=lambda z: (z.mow_order == 0, z.mow_order))
+    for zone in zones:
+        if zone.polygon_points and point_in_polygon(pose.x, pose.y, zone.polygon_points):
+            return zone
+    return None
+
+
 def derive_current_zone(state_dict: dict[str, Any]) -> str | None:
     """Derive 'which zone is the mower physically in right now'.
 
@@ -191,9 +263,15 @@ def derive_current_zone(state_dict: dict[str, Any]) -> str | None:
     Per arch.md §12, this is what the official app does. Pose is in local
     map frame matching the polygon coordinates (both are mower-local meters
     relative to the dock origin).
+
+    Implementation note: the zone polygon walk is shared with all other
+    consumers via ``zone_at_pose`` (cache-fed). Channels aren't cached —
+    they're walked here on each call. The workStatus gate is local because
+    the cache stores spatial truth regardless of task state ("mower_in_zone"
+    is useful idle too).
     """
     pose = state_dict.get("pose")
-    catalog = state_dict.get("zone_catalog")  # populated by coordinator after parse_zone_catalog
+    catalog = state_dict.get("zone_catalog")
     robot_info = state_dict.get("robotInfo")
     if not pose or not catalog or not robot_info:
         return None
@@ -202,13 +280,11 @@ def derive_current_zone(state_dict: dict[str, Any]) -> str | None:
     if work_status not in ACTIVE_TASK_WORK_STATUSES:
         return None
 
-    # Try go-zones first, ordered by mowOrder>0 (active task) then others
-    zones = sorted(catalog.zones, key=lambda z: (z.mow_order == 0, z.mow_order))
-    for zone in zones:
-        if zone.polygon_points and point_in_polygon(pose.x, pose.y, zone.polygon_points):
-            return zone.name
+    zone = zone_at_pose(state_dict)
+    if zone is not None:
+        return zone.name
 
-    # Then channels — handle dock approach specially
+    # Channel walk — distinct geometry from zones; not cached.
     for ch in catalog.channels:
         if ch.polygon_points and point_in_polygon(pose.x, pose.y, ch.polygon_points):
             if ch.is_docking_channel:
@@ -220,18 +296,6 @@ def derive_current_zone(state_dict: dict[str, Any]) -> str | None:
             return f"{n1} → {n2}"
 
     return None  # mower is somewhere between defined polygons (rare)
-
-
-def _zone_at_pose(state_dict: dict[str, Any]):
-    """Return the ZoneInfo the mower is currently inside, or None."""
-    pose = state_dict.get("pose")
-    catalog = state_dict.get("zone_catalog")
-    if not pose or not catalog:
-        return None
-    for zone in catalog.zones:
-        if zone.polygon_points and point_in_polygon(pose.x, pose.y, zone.polygon_points):
-            return zone
-    return None
 
 
 def _has_field(msg, name: str) -> bool:
@@ -261,7 +325,7 @@ def active_cut_config(state_dict: dict[str, Any]) -> dict[str, Any]:
     """
     result: dict[str, Any] = {"cut_speed": None, "cut_height": None, "move_speed": None}
 
-    current_zone = _zone_at_pose(state_dict)
+    current_zone = zone_at_pose(state_dict)
     active_schedule = state_dict.get("active_schedule")  # PbSchedule of currently-running task, if any
 
     # Tier 1: schedule override per-zone

@@ -200,6 +200,80 @@ class TestActiveCutConfig:
         assert result == {"cut_speed": None, "cut_height": None, "move_speed": None}
 
 
+class TestCurrentZoneCache:
+    """The cache populated by ``compute_current_zone_cache`` is what makes
+    pose-in-polygon work O(1) per consumer instead of O(N) per call. These
+    tests pin down the contract every consumer relies on.
+    """
+
+    def _state_with_zones(self, pose_xy):
+        from lymow_mqtt.protocol import ZoneCatalog, ZoneInfo
+
+        class _P:
+            def __init__(self, x, y): self.x, self.y = x, y
+
+        z1 = ZoneInfo(
+            hash_id="aaa11111", name="Front",
+            mow_order=0, is_enabled=True,
+            polygon_points=[(0, 0), (5, 0), (5, 5), (0, 5)],
+        )
+        z2 = ZoneInfo(
+            hash_id="bbb22222", name="Back",
+            mow_order=1, is_enabled=True,
+            polygon_points=[(10, 10), (15, 10), (15, 15), (10, 15)],
+        )
+        cat = ZoneCatalog()
+        cat.zones.extend([z1, z2])
+        cat.zones_by_hashid[z1.hash_id] = z1
+        cat.zones_by_hashid[z2.hash_id] = z2
+        return {
+            "pose": _P(*pose_xy),
+            "zone_catalog": cat,
+        }
+
+    def test_cache_populated_with_containing_zone_hash(self):
+        from lymow_mqtt import state as state_mod
+        s = self._state_with_zones((2.5, 2.5))
+        result = state_mod.compute_current_zone_cache(s)
+        assert result == "aaa11111"
+        assert s["_current_zone_hash_id"] == "aaa11111"
+
+    def test_cache_populated_with_none_when_pose_outside_all_zones(self):
+        from lymow_mqtt import state as state_mod
+        s = self._state_with_zones((100, 100))
+        result = state_mod.compute_current_zone_cache(s)
+        assert result is None
+        assert s["_current_zone_hash_id"] is None  # key present, value None
+
+    def test_zone_at_pose_reads_cache_when_present(self):
+        from lymow_mqtt import state as state_mod
+        s = self._state_with_zones((2.5, 2.5))
+        # Pre-populate cache with a value that disagrees with pose.
+        # zone_at_pose should trust the cache, not re-walk.
+        s["_current_zone_hash_id"] = "bbb22222"
+        zone = state_mod.zone_at_pose(s)
+        assert zone is not None
+        assert zone.hash_id == "bbb22222"
+
+    def test_zone_at_pose_falls_back_to_live_walk_when_cache_missing(self):
+        from lymow_mqtt import state as state_mod
+        s = self._state_with_zones((2.5, 2.5))
+        assert "_current_zone_hash_id" not in s
+        zone = state_mod.zone_at_pose(s)
+        assert zone is not None
+        assert zone.hash_id == "aaa11111"
+
+    def test_cache_handles_missing_pose_or_catalog(self):
+        from lymow_mqtt import state as state_mod
+        # No pose
+        assert state_mod.compute_current_zone_cache({"zone_catalog": object()}) is None
+        # No catalog
+        s = {"pose": object()}
+        assert state_mod.compute_current_zone_cache(s) is None
+        # Both missing
+        assert state_mod.compute_current_zone_cache({}) is None
+
+
 from datetime import UTC, datetime, timedelta
 
 

@@ -280,6 +280,13 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # (so zone renames done in the app during a mow get picked up after).
         self._maybe_refire_query_map(cleanreport_arrived=cleanreport_arrived)
 
+        # One pose-in-polygon walk → cached for every consumer (current_zone
+        # sensor, per-zone "mower_in_zone" attribute, active_cut_config,
+        # map camera task-highlight gate). Avoids N×N polygon tests when
+        # multiple entities each independently ask "which zone is the
+        # mower in right now". See state.compute_current_zone_cache.
+        state.compute_current_zone_cache(self._state)
+
         # Signal-quality heat map — fold this broadcast's (pose, signal)
         # readings into the spatial grid. Cheap (one cell update) and
         # bounded in size by yard footprint. See signal_grid.py.

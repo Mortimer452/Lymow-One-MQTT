@@ -633,11 +633,13 @@ class LymowZoneSensor(LymowEntity, SensorEntity, RestoreEntity):
                     1,
                 )
                 out["area_unit"] = UnitOfArea.SQUARE_FEET
-            pose = self.coordinator.state_dict.get("pose")
-            if pose is not None and hasattr(pose, "x") and hasattr(pose, "y"):
-                out["mower_in_zone"] = state_mod.point_in_polygon(
-                    pose.x, pose.y, zone.polygon_points
-                )
+            # Shared answer: which zone the mower is in is computed once
+            # at coordinator pboutput-merge time (state.compute_current_zone_cache)
+            # and looked up here. For yards with many zones this is the
+            # difference between one polygon test per pboutput and N per
+            # state refresh.
+            current = state_mod.zone_at_pose(self.coordinator.state_dict)
+            out["mower_in_zone"] = current is not None and current.hash_id == self._hash_id
         return out
 
 
