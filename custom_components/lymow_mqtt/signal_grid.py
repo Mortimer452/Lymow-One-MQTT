@@ -35,9 +35,11 @@ from typing import Any
 # ~6.6 samples). Tune here if the heat map looks too noisy or too lagged.
 EWMA_ALPHA = 0.1
 
-# Side length of one cell in mower-local meters. 0.5 m is fine enough to
-# resolve walking-pattern detail without exploding the cell count.
-CELL_M = 0.5
+# Side length of one cell in mower-local meters. The mower itself is
+# ~0.5m wide, so sub-mower-footprint resolution is mostly noise — 1.0m
+# cells give each bin enough samples to converge quickly while still
+# resolving meaningful spatial detail across a typical lawn.
+CELL_M = 1.0
 
 # Persisted-blob format version. Bump if `to_dict()` / `from_dict()`
 # semantics change incompatibly.

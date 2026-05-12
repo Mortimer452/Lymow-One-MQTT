@@ -7,23 +7,30 @@ from lymow_mqtt import signal_grid as sg
 
 
 class TestCellKey:
+    """Cell-key tests written against ``sg.CELL_M`` rather than a hard-coded
+    value so tweaks to the grid resolution don't drag the tests along.
+    """
+
     def test_origin_maps_to_zero_zero(self):
         assert sg.cell_key(0.0, 0.0) == (0, 0)
 
     def test_positive_values_floor_into_cell(self):
-        # CELL_M = 0.5 → x in [0, 0.5) → cx=0
-        assert sg.cell_key(0.25, 0.25) == (0, 0)
-        # x in [0.5, 1.0) → cx=1
-        assert sg.cell_key(0.5, 0.5) == (1, 1)
-        # x in [1.0, 1.5) → cx=2
-        assert sg.cell_key(1.49, 1.0) == (2, 2)
+        # x in [0, CELL_M) → cx=0
+        assert sg.cell_key(0.5 * sg.CELL_M, 0.5 * sg.CELL_M) == (0, 0)
+        # x in [CELL_M, 2*CELL_M) → cx=1
+        assert sg.cell_key(sg.CELL_M, sg.CELL_M) == (1, 1)
+        assert sg.cell_key(1.5 * sg.CELL_M, 1.5 * sg.CELL_M) == (1, 1)
+        # x in [2*CELL_M, 3*CELL_M) → cx=2
+        assert sg.cell_key(2.5 * sg.CELL_M, 2.0 * sg.CELL_M) == (2, 2)
 
     def test_negative_values_floor_correctly(self):
         # Python's // floors toward -inf, which is what we want — the cell
-        # spanning (-0.5, 0) should be key -1, not 0.
-        assert sg.cell_key(-0.25, -0.25) == (-1, -1)
-        assert sg.cell_key(-0.5, -0.5) == (-1, -1)
-        assert sg.cell_key(-0.51, -0.51) == (-2, -2)
+        # spanning [-CELL_M, 0) should be key -1, not 0.
+        assert sg.cell_key(-0.5 * sg.CELL_M, -0.5 * sg.CELL_M) == (-1, -1)
+        # Boundary point at exactly -CELL_M still floors to -1.
+        assert sg.cell_key(-sg.CELL_M, -sg.CELL_M) == (-1, -1)
+        # Anything strictly below -CELL_M lands in cell -2.
+        assert sg.cell_key(-1.01 * sg.CELL_M, -1.01 * sg.CELL_M) == (-2, -2)
 
 
 class TestEwma:
@@ -82,9 +89,10 @@ class TestSignalGrid:
 
     def test_samples_in_same_cell_merge(self):
         g = sg.SignalGrid()
-        # Both points fall in cell (1, 2) at CELL_M=0.5.
-        g.record(0.55, 1.10, horizontal_accuracy=0.05)
-        g.record(0.95, 1.45, horizontal_accuracy=0.05)
+        # Both points fall in cell (1, 2) — slightly off-center within the
+        # same bin regardless of CELL_M choice.
+        g.record(1.10 * sg.CELL_M, 2.20 * sg.CELL_M, horizontal_accuracy=0.05)
+        g.record(1.90 * sg.CELL_M, 2.90 * sg.CELL_M, horizontal_accuracy=0.05)
         assert len(g) == 1
         cell = g.cells()[(1, 2)]
         assert cell.n == 2
@@ -92,8 +100,8 @@ class TestSignalGrid:
 
     def test_samples_in_different_cells_stay_separate(self):
         g = sg.SignalGrid()
-        g.record(0.1, 0.1, horizontal_accuracy=0.05)
-        g.record(5.1, 5.1, horizontal_accuracy=0.50)
+        g.record(0.2 * sg.CELL_M, 0.2 * sg.CELL_M, horizontal_accuracy=0.05)
+        g.record(10.2 * sg.CELL_M, 10.2 * sg.CELL_M, horizontal_accuracy=0.50)
         assert len(g) == 2
         assert g.cells()[(0, 0)].horizontal_accuracy == pytest.approx(0.05)
         assert g.cells()[(10, 10)].horizontal_accuracy == pytest.approx(0.50)

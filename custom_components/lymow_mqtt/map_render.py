@@ -23,6 +23,7 @@ now" signal is more immediate than "what's in the queue".
 """
 from __future__ import annotations
 
+import colorsys
 import io
 import math
 from typing import Any
@@ -54,14 +55,29 @@ _LABEL_POSE       = (250, 179, 135, 255)
 # Heat-map cell colors for the `signal_map` camera. Bucketed by the value
 # of `horizontal_accuracy` in meters (lower = better RTK quality).
 # Semi-transparent so zone outlines / channel lines remain readable on top.
+#
+# 10-step gradient from green (best) → yellow (mid) → red (worst), at 0.02m
+# bucket width. Anything ≥0.20m saturates to the last bucket (red), so
+# extreme outliers don't keep visually escalating.
 _HEAT_ALPHA = 150
-_HEAT_BUCKETS_HA: tuple[tuple[float, tuple[int, int, int, int]], ...] = (
-    # (upper bound m, fill rgba) — first match wins. Last bucket catches all.
-    (0.05, (102, 204, 102, _HEAT_ALPHA)),  # <5cm  — bright green (fixed cm)
-    (0.10, (166, 227, 161, _HEAT_ALPHA)),  # <10cm — green
-    (0.20, (249, 226, 175, _HEAT_ALPHA)),  # <20cm — yellow
-    (0.50, (250, 179, 135, _HEAT_ALPHA)),  # <50cm — orange
-    (float("inf"), (243, 139, 168, _HEAT_ALPHA)),  # >=50cm — red
+_HEAT_GRADIENT_STEPS = 10
+_HEAT_GRADIENT_BUCKET_M = 0.02
+_HEAT_GRADIENT_MAX_M = _HEAT_GRADIENT_STEPS * _HEAT_GRADIENT_BUCKET_M  # 0.20
+
+
+def _gradient_step_color(i: int) -> tuple[int, int, int, int]:
+    """Color for gradient bucket ``i`` (0=green, N-1=red)."""
+    # Hue interpolates linearly from 120° (green) to 0° (red), passing
+    # through 60° (yellow) at the midpoint. Slightly desaturated so the
+    # palette sits comfortably alongside the muted Catppuccin-ish base
+    # colors used elsewhere in the renderer.
+    hue_deg = 120.0 * (1.0 - i / (_HEAT_GRADIENT_STEPS - 1))
+    r, g, b = colorsys.hsv_to_rgb(hue_deg / 360.0, 0.75, 0.85)
+    return (int(r * 255), int(g * 255), int(b * 255), _HEAT_ALPHA)
+
+
+_HEAT_PALETTE_HA: tuple[tuple[int, int, int, int], ...] = tuple(
+    _gradient_step_color(i) for i in range(_HEAT_GRADIENT_STEPS)
 )
 
 # A modest pad around the polygon bounds so polygons don't kiss the edges
@@ -388,11 +404,90 @@ def render_map(
 
 
 def _heat_color_ha(value: float) -> tuple[int, int, int, int]:
-    """Bucket-lookup RGBA fill for a horizontal_accuracy heat cell."""
-    for upper, color in _HEAT_BUCKETS_HA:
-        if value < upper:
-            return color
-    return _HEAT_BUCKETS_HA[-1][1]  # unreachable; the last upper is +inf
+    """Bucket-lookup RGBA fill for a horizontal_accuracy heat cell.
+
+    Steps are ``_HEAT_GRADIENT_BUCKET_M`` wide starting at 0. Values at or
+    above ``_HEAT_GRADIENT_MAX_M`` saturate to the last (red) step.
+    """
+    # Negative or nonsense values get clamped to the best bucket (defensive
+    # — should not happen with PbLocalizationInfo.horizontalAccuracy, which
+    # is always non-negative).
+    if value <= 0.0:
+        return _HEAT_PALETTE_HA[0]
+    if value >= _HEAT_GRADIENT_MAX_M:
+        return _HEAT_PALETTE_HA[-1]
+    idx = int(value / _HEAT_GRADIENT_BUCKET_M)
+    if idx >= _HEAT_GRADIENT_STEPS:
+        idx = _HEAT_GRADIENT_STEPS - 1
+    return _HEAT_PALETTE_HA[idx]
+
+
+def _draw_heat_legend(
+    img: Image.Image,
+    *,
+    title: str = "Horizontal accuracy (m)",
+) -> None:
+    """Stamp a horizontal-accuracy color-bar legend onto the rendered image.
+
+    Draws a small legend block in the bottom-left corner: title text on top,
+    a 10-cell color strip, tick labels at 0, midpoint, max. The block sits
+    over the canvas background in the existing left/bottom margin so it
+    rarely overlaps map content, but renders on top of anything regardless.
+    """
+    draw = ImageDraw.Draw(img)
+    font = _load_font(11)
+    img_h = img.height
+
+    # Layout — keep the legend compact so it doesn't dominate the image.
+    cell_w = 18
+    cell_h = 12
+    strip_w = cell_w * _HEAT_GRADIENT_STEPS
+    title_h = 14
+    tick_h = 14
+    pad = 8
+
+    left = pad
+    bottom = img_h - pad
+    strip_top = bottom - tick_h - cell_h
+    title_y = strip_top - title_h
+
+    # Background pill for legibility against either dark or busy map areas.
+    box_top = title_y - 4
+    box_bot = bottom
+    box_right = left + strip_w + pad
+    draw.rectangle((left - pad // 2, box_top, box_right, box_bot), fill=_LABEL_BG)
+
+    # Title.
+    draw.text((left, title_y), title, fill=_LABEL_PLAIN, font=font)
+
+    # Color cells, left-to-right (best → worst).
+    for i in range(_HEAT_GRADIENT_STEPS):
+        x0 = left + i * cell_w
+        x1 = x0 + cell_w
+        # Force the legend swatch to full opacity for readability — the
+        # palette entries carry the heat-cell alpha, which is intentionally
+        # semi-transparent on the map but makes legend swatches washed out.
+        r, g, b, _a = _HEAT_PALETTE_HA[i]
+        draw.rectangle((x0, strip_top, x1, strip_top + cell_h), fill=(r, g, b, 255))
+
+    # Tick labels — show endpoints and midpoint to keep things uncluttered.
+    tick_y = strip_top + cell_h + 1
+    ticks = (
+        (left, "0"),
+        (left + strip_w // 2, f"{_HEAT_GRADIENT_MAX_M / 2:.2f}"),
+        (left + strip_w, f"{_HEAT_GRADIENT_MAX_M:.2f}+"),
+    )
+    for tx_px, label in ticks:
+        tw, _th = _text_size(font, draw, label)
+        # Center the first / last labels on their tick; left/right edges
+        # would clip otherwise.
+        if label == "0":
+            x = tx_px
+        elif label.endswith("+"):
+            x = tx_px - tw
+        else:
+            x = tx_px - tw // 2
+        draw.text((x, tick_y), label, fill=_LABEL_PLAIN, font=font)
 
 
 def _collect_bounds_with_grid(
@@ -563,6 +658,10 @@ def render_signal_map(
         hx = mx + math.cos(theta) * 14
         hy = my - math.sin(theta) * 14
         draw.line([(mx, my), (hx, hy)], fill=_MOWER_HEADING, width=3)
+
+    # 10) Heat-map legend in the bottom-left so the user can decode colors
+    # without having to leave the dashboard.
+    _draw_heat_legend(img)
 
     buf = io.BytesIO()
     img.convert("RGB").save(buf, format="PNG", optimize=True)
