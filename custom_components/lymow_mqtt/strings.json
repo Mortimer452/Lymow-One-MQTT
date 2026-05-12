@@ -78,6 +78,10 @@
     },
     "switch": {
       "auto_recharge": {"name": "Auto recharge & resume"}
+    },
+    "number": {
+      "recharge_threshold": {"name": "Auto-dock below"},
+      "resume_threshold": {"name": "Auto-resume above"}
     }
   }
 }

@@ -561,18 +561,31 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not ok:
             raise HomeAssistantError("MQTT publish failed")
 
-    async def cmd_set_auto_recharge(self, enabled: bool) -> None:
-        """Toggle the firmware's auto-recharge-and-resume feature.
+    async def _send_rr_update(
+        self,
+        *,
+        enable_rr: bool | None = None,
+        recharge_bat: int | None = None,
+        resume_bat: int | None = None,
+    ) -> None:
+        """Send a setRR with optional field overrides, carry-forward for the rest.
 
-        Reads the current rrConfig from coordinator state to carry forward
-        the user's other preferences (battery thresholds, time window) so
-        toggling the switch doesn't reset them. Builds the no-userCtrl setRR
-        payload (arch.md §6g) and publishes. The firmware applies the new
-        config and broadcasts back the updated robotConfig within ~1s.
+        Reads the current rrConfig from coordinator state and substitutes any
+        explicitly-passed fields. Builds the no-userCtrl setRR payload
+        (arch.md §6g) and publishes. The firmware applies the change and
+        broadcasts back the updated robotConfig within ~1s.
 
         Raises HomeAssistantError if no robotConfig has been received yet —
         we'd otherwise be writing default zero values for the carry-forward
         fields, nuking the user's settings.
+
+        Carry-forward MUST always emit the PbTimeZone sub-messages because
+        the firmware uses REPLACE (not merge) semantics for them: a setRR
+        omitting resumePeriodStart/End on the wire silently resets the
+        saved time window to 00:00. The official app at
+        decompiled.js:328846 always includes both fields for exactly this
+        reason. See arch.md §6g + the project memory
+        `project_rrconfig_replace_semantics`.
         """
         rc = self._state.get("robotConfig")
         if rc is None or not rc.HasField("rrConfig"):
@@ -581,27 +594,39 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "mower to broadcast its current config, then retry."
             )
         rr = rc.rrConfig
-        # Carry-forward must ALWAYS emit the PbTimeZone sub-messages — the
-        # firmware uses REPLACE (not merge) semantics for those, so a setRR
-        # without resumePeriodStart/End on the wire resets the user's saved
-        # window to 00:00. The official app at decompiled.js:328846 always
-        # includes both fields for exactly this reason. We default the inner
-        # hour/minute to 0 when the device echoed an empty `{}` sub-message
-        # (which means hour=0, minute=0 anyway), so the wire payload always
-        # carries the full PbTimeZone. See arch.md §6g + the project memory
-        # `project_rrconfig_replace_semantics`.
         ps = rr.resumePeriodStart if rr.HasField("resumePeriodStart") else None
         pe = rr.resumePeriodEnd   if rr.HasField("resumePeriodEnd")   else None
         raw = protocol.encode_set_rr_config(
-            enable_rr=enabled,
-            recharge_bat=rr.rechargeBat if rr.HasField("rechargeBat") else None,
-            resume_bat=rr.resumeBat if rr.HasField("resumeBat") else None,
+            enable_rr=(
+                enable_rr if enable_rr is not None
+                else (rr.enableRr if rr.HasField("enableRr") else None)
+            ),
+            recharge_bat=(
+                recharge_bat if recharge_bat is not None
+                else (rr.rechargeBat if rr.HasField("rechargeBat") else None)
+            ),
+            resume_bat=(
+                resume_bat if resume_bat is not None
+                else (rr.resumeBat if rr.HasField("resumeBat") else None)
+            ),
             period_start_hour=(ps.hour   if ps is not None else 0),
             period_start_minute=(ps.minute if ps is not None else 0),
             period_end_hour=(pe.hour     if pe is not None else 0),
             period_end_minute=(pe.minute   if pe is not None else 0),
         )
         await self._publish_raw(raw)
+
+    async def cmd_set_auto_recharge(self, enabled: bool) -> None:
+        """Toggle `rrConfig.enableRr`. Thin wrapper over `_send_rr_update`."""
+        await self._send_rr_update(enable_rr=enabled)
+
+    async def cmd_set_recharge_threshold(self, value: int) -> None:
+        """Set `rrConfig.rechargeBat` — battery % below which the mower auto-docks."""
+        await self._send_rr_update(recharge_bat=int(value))
+
+    async def cmd_set_resume_threshold(self, value: int) -> None:
+        """Set `rrConfig.resumeBat` — battery % at which the mower auto-resumes."""
+        await self._send_rr_update(resume_bat=int(value))
 
     async def _wait_for_state(self, expected: set[int], timeout: float) -> bool:
         """Wait until robotInfo.workStatus or robotStatus is in expected, or timeout.
