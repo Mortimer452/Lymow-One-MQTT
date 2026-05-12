@@ -139,6 +139,7 @@ class TestPersistenceRoundTrip:
         # Corrupt or partial Store data should never crash; just dropped cells.
         bad = {
             "version": sg.GRID_SCHEMA_VERSION,
+            "cell_m": sg.CELL_M,
             "cells": {
                 "5,10":  {"n": 3, "ha": 0.12, "pq": 3, "wifi": -55, "lte": -70},
                 "bad":   {"n": 1, "ha": 0.10},        # un-parseable key
@@ -157,4 +158,29 @@ class TestPersistenceRoundTrip:
 
     def test_from_dict_none_returns_empty_grid(self):
         g = sg.SignalGrid.from_dict(None)
+        assert len(g) == 0
+
+    def test_from_dict_discards_on_cell_size_mismatch(self):
+        # Simulates an upgrade where the integration's CELL_M changed —
+        # any stored cells need to be discarded because their bin keys
+        # would land in the wrong world coordinates at the new resolution.
+        legacy = {
+            "version": sg.GRID_SCHEMA_VERSION,
+            "cell_m": sg.CELL_M * 2,  # deliberately wrong
+            "cells": {
+                "0,0":  {"n": 5, "ha": 0.04},
+                "10,5": {"n": 3, "ha": 0.18},
+            },
+        }
+        g = sg.SignalGrid.from_dict(legacy)
+        assert len(g) == 0
+
+    def test_from_dict_discards_legacy_blob_without_cell_m(self):
+        # v1 blobs (pre-cell_m field) can't be trusted at a different bin
+        # size, so the load path discards them too.
+        legacy = {
+            "version": 1,
+            "cells": {"3,4": {"n": 2, "ha": 0.05}},
+        }
+        g = sg.SignalGrid.from_dict(legacy)
         assert len(g) == 0

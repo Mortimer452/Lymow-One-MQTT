@@ -24,8 +24,11 @@ Design choices:
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
+
+_LOGGER = logging.getLogger(__name__)
 
 # Smoothing factor for the per-cell EWMA.
 #
@@ -42,8 +45,10 @@ EWMA_ALPHA = 0.1
 CELL_M = 1.0
 
 # Persisted-blob format version. Bump if `to_dict()` / `from_dict()`
-# semantics change incompatibly.
-GRID_SCHEMA_VERSION = 1
+# semantics change incompatibly. v2 added the `cell_m` field so the
+# load path can detect grid-resolution changes and discard incompatible
+# data (cell keys mean different world coordinates at different bin sizes).
+GRID_SCHEMA_VERSION = 2
 
 
 def _ewma(prev: float | None, sample: float) -> float:
@@ -156,6 +161,7 @@ class SignalGrid:
         """Serialize to a JSON-safe dict (string keys, no tuples)."""
         return {
             "version": GRID_SCHEMA_VERSION,
+            "cell_m": CELL_M,
             "cells": {
                 f"{cx},{cy}": {
                     "n": c.n,
@@ -170,9 +176,28 @@ class SignalGrid:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "SignalGrid":
-        """Inverse of `to_dict` — tolerant of partial / corrupt cells."""
+        """Inverse of `to_dict` — tolerant of partial / corrupt cells.
+
+        Discards the entire grid (returns empty) if the stored blob's
+        ``cell_m`` doesn't match the current value, or if the field is
+        missing (legacy v1 blobs predate the safety net and can't be
+        trusted at a different resolution than they were written at).
+        Cell keys are bin coordinates — at a different bin size they refer
+        to different world locations, so re-using them would paint cells
+        in wrong places.
+        """
         grid = cls()
         if not isinstance(data, dict):
+            return grid
+        stored_cell_m = data.get("cell_m")
+        cell_count = len(data.get("cells") or {})
+        if stored_cell_m != CELL_M:
+            if cell_count > 0:
+                _LOGGER.info(
+                    "Signal-grid blob has cell_m=%r, integration uses %r — "
+                    "discarding %d cells and starting fresh.",
+                    stored_cell_m, CELL_M, cell_count,
+                )
             return grid
         for key_str, raw in (data.get("cells") or {}).items():
             try:
