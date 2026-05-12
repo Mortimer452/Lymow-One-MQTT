@@ -11,8 +11,9 @@ start_zones:
         Ordered list of zones to mow. Each entry can be either a zone
         NAME (case-insensitive, as configured in the Lymow app — e.g.
         "Pool", "Front yard") OR an 8-character hashId. The mower mows
-        them in the given order. Discover zone names by inspecting the
-        `available_zones` attribute on `sensor.<mower>_current_zone`.
+        them in the given order. Discover zone names by browsing the
+        `sensor.<mower>_zone_*` entities in the entity registry — each
+        zone the mower knows about has its own last-mowed sensor.
       required: true
       example: ["Pool", "Front yard"]
       selector:

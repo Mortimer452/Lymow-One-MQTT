@@ -17,9 +17,10 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from . import protocol, state, state_matrix, userctrl
+from . import protocol, signal_grid as _sg, state, state_matrix, userctrl
 from .auth import CognitoAuth
 from .const import (
     API_ENDPOINTS,
@@ -42,6 +43,14 @@ _COMMAND_WATCHDOG_SECONDS = 2.5
 _QUERY_MAP_WAIT_SECONDS = 3.0
 # REST online poll cadence
 _REST_POLL_INTERVAL = timedelta(minutes=15)
+
+# Signal-grid persistence — Store API has no built-in throttling, and
+# `async_delay_save` resets its timer on each call (debounce, not
+# periodic), so for continuous pboutput-driven updates we save explicitly
+# every Nth sample to bound disk traffic without losing too much history
+# on an unclean shutdown.
+_SIGNAL_GRID_STORE_VERSION = 1
+_SIGNAL_GRID_SAVE_EVERY_N_SAMPLES = 20
 
 
 class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -110,8 +119,29 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._shutting_down: bool = False
         self._reconnecting: bool = False
 
+        # Signal-quality heat-map accumulator (see signal_grid.py). The
+        # grid lives on the coordinator so all entities (the signal-map
+        # camera, future heat-overlay variants) read the same instance.
+        # Loaded from Store in `async_setup`.
+        self.signal_grid: _sg.SignalGrid = _sg.SignalGrid()
+        self._signal_grid_store: Store = Store(
+            hass, _SIGNAL_GRID_STORE_VERSION, f"{DOMAIN}_heatmap_{thing_name}"
+        )
+        self._signal_sample_count: int = 0
+
     async def async_setup(self) -> None:
         """Connect MQTT, fire startup queries, kick off REST poll."""
+        # Restore the signal-quality heat-map grid from disk before the
+        # MQTT subscriber starts so first-pboutput samples land on top of
+        # historical context rather than a blank grid.
+        try:
+            self.signal_grid = _sg.SignalGrid.from_dict(
+                await self._signal_grid_store.async_load()
+            )
+        except Exception:
+            _LOGGER.exception("Failed to load signal grid from Store; starting fresh")
+            self.signal_grid = _sg.SignalGrid()
+
         # Initial REST device-info call (also gives us the IP for camera)
         await self._do_rest_poll()
 
@@ -156,6 +186,12 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 pass
         if self.mqtt:
             await self.mqtt.disconnect()
+        # Final flush of the signal grid so any in-flight samples since
+        # the last periodic save make it to disk.
+        try:
+            await self._signal_grid_store.async_save(self.signal_grid.to_dict())
+        except Exception:
+            _LOGGER.exception("Failed to save signal grid on unload")
 
     @property
     def state_dict(self) -> dict[str, Any]:
@@ -244,6 +280,18 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # (so zone renames done in the app during a mow get picked up after).
         self._maybe_refire_query_map(cleanreport_arrived=cleanreport_arrived)
 
+        # One pose-in-polygon walk → cached for every consumer (current_zone
+        # sensor, per-zone "mower_in_zone" attribute, active_cut_config,
+        # map camera task-highlight gate). Avoids N×N polygon tests when
+        # multiple entities each independently ask "which zone is the
+        # mower in right now". See state.compute_current_zone_cache.
+        state.compute_current_zone_cache(self._state)
+
+        # Signal-quality heat map — fold this broadcast's (pose, signal)
+        # readings into the spatial grid. Cheap (one cell update) and
+        # bounded in size by yard footprint. See signal_grid.py.
+        self._record_signal_sample()
+
         # Notify watchdog waiters. We only set() here; the waiter does the
         # clear() before each await so a set() between predicate-check and
         # wait() can't be lost.
@@ -251,6 +299,73 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Notify HA entities
         self.async_set_updated_data(self._state)
+
+    def _record_signal_sample(self) -> None:
+        """Fold this broadcast's (pose, signal) readings into the heat-map grid.
+
+        Pulled from the merged state dict rather than the raw protobuf so
+        sticky-merged fields are picked up correctly (e.g. localizationInfo
+        is a snapshot field that always lands, but defensive None checks
+        cover edge cases like the first few broadcasts after MQTT reconnect).
+
+        Skips entirely if there's no pose to anchor the sample to, or if
+        all four metric values are missing (nothing to fold in). Triggers
+        a Store write every Nth recorded sample to bound disk traffic.
+        """
+        pose = self._state.get("pose")
+        if pose is None:
+            return
+        try:
+            px = float(pose.x)
+            py = float(pose.y)
+        except (AttributeError, TypeError, ValueError):
+            return
+        # Reject non-finite pose values (NaN can leak in if the firmware
+        # ever emits an unset float in pose; would silently produce a
+        # garbage cell key otherwise).
+        if not (px == px and py == py):  # NaN check without importing math
+            return
+
+        li = self._state.get("localizationInfo")
+        ri = self._state.get("robotInfo")
+        ha = (
+            float(li.horizontalAccuracy)
+            if li is not None and li.HasField("horizontalAccuracy")
+            else None
+        )
+        pq = (
+            int(li.positionQuality)
+            if li is not None and li.HasField("positionQuality")
+            else None
+        )
+        wifi = (
+            int(ri.wifiSignalQuality)
+            if ri is not None and ri.HasField("wifiSignalQuality")
+            else None
+        )
+        lte = (
+            int(ri.lteSignalQuality)
+            if ri is not None and ri.HasField("lteSignalQuality")
+            else None
+        )
+        if ha is None and pq is None and wifi is None and lte is None:
+            return
+
+        self.signal_grid.record(
+            px, py,
+            horizontal_accuracy=ha,
+            position_quality=pq,
+            wifi_signal=wifi,
+            lte_signal=lte,
+        )
+        self._signal_sample_count += 1
+        if self._signal_sample_count % _SIGNAL_GRID_SAVE_EVERY_N_SAMPLES == 0:
+            # async_create_task because async_save is async but this method
+            # is sync. The Store API serializes concurrent saves so even
+            # back-to-back kicks are safe.
+            self.hass.async_create_task(
+                self._signal_grid_store.async_save(self.signal_grid.to_dict())
+            )
 
     def _maybe_refire_query_map(self, cleanreport_arrived: bool = False) -> None:
         """Fire another QUERY_MAP under any of three conditions:
@@ -453,18 +568,31 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not ok:
             raise HomeAssistantError("MQTT publish failed")
 
-    async def cmd_set_auto_recharge(self, enabled: bool) -> None:
-        """Toggle the firmware's auto-recharge-and-resume feature.
+    async def _send_rr_update(
+        self,
+        *,
+        enable_rr: bool | None = None,
+        recharge_bat: int | None = None,
+        resume_bat: int | None = None,
+    ) -> None:
+        """Send a setRR with optional field overrides, carry-forward for the rest.
 
-        Reads the current rrConfig from coordinator state to carry forward
-        the user's other preferences (battery thresholds, time window) so
-        toggling the switch doesn't reset them. Builds the no-userCtrl setRR
-        payload (arch.md §6g) and publishes. The firmware applies the new
-        config and broadcasts back the updated robotConfig within ~1s.
+        Reads the current rrConfig from coordinator state and substitutes any
+        explicitly-passed fields. Builds the no-userCtrl setRR payload
+        (arch.md §6g) and publishes. The firmware applies the change and
+        broadcasts back the updated robotConfig within ~1s.
 
         Raises HomeAssistantError if no robotConfig has been received yet —
         we'd otherwise be writing default zero values for the carry-forward
         fields, nuking the user's settings.
+
+        Carry-forward MUST always emit the PbTimeZone sub-messages because
+        the firmware uses REPLACE (not merge) semantics for them: a setRR
+        omitting resumePeriodStart/End on the wire silently resets the
+        saved time window to 00:00. The official app at
+        decompiled.js:328846 always includes both fields for exactly this
+        reason. See arch.md §6g + the project memory
+        `project_rrconfig_replace_semantics`.
         """
         rc = self._state.get("robotConfig")
         if rc is None or not rc.HasField("rrConfig"):
@@ -473,27 +601,39 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "mower to broadcast its current config, then retry."
             )
         rr = rc.rrConfig
-        # Carry-forward must ALWAYS emit the PbTimeZone sub-messages — the
-        # firmware uses REPLACE (not merge) semantics for those, so a setRR
-        # without resumePeriodStart/End on the wire resets the user's saved
-        # window to 00:00. The official app at decompiled.js:328846 always
-        # includes both fields for exactly this reason. We default the inner
-        # hour/minute to 0 when the device echoed an empty `{}` sub-message
-        # (which means hour=0, minute=0 anyway), so the wire payload always
-        # carries the full PbTimeZone. See arch.md §6g + the project memory
-        # `project_rrconfig_replace_semantics`.
         ps = rr.resumePeriodStart if rr.HasField("resumePeriodStart") else None
         pe = rr.resumePeriodEnd   if rr.HasField("resumePeriodEnd")   else None
         raw = protocol.encode_set_rr_config(
-            enable_rr=enabled,
-            recharge_bat=rr.rechargeBat if rr.HasField("rechargeBat") else None,
-            resume_bat=rr.resumeBat if rr.HasField("resumeBat") else None,
+            enable_rr=(
+                enable_rr if enable_rr is not None
+                else (rr.enableRr if rr.HasField("enableRr") else None)
+            ),
+            recharge_bat=(
+                recharge_bat if recharge_bat is not None
+                else (rr.rechargeBat if rr.HasField("rechargeBat") else None)
+            ),
+            resume_bat=(
+                resume_bat if resume_bat is not None
+                else (rr.resumeBat if rr.HasField("resumeBat") else None)
+            ),
             period_start_hour=(ps.hour   if ps is not None else 0),
             period_start_minute=(ps.minute if ps is not None else 0),
             period_end_hour=(pe.hour     if pe is not None else 0),
             period_end_minute=(pe.minute   if pe is not None else 0),
         )
         await self._publish_raw(raw)
+
+    async def cmd_set_auto_recharge(self, enabled: bool) -> None:
+        """Toggle `rrConfig.enableRr`. Thin wrapper over `_send_rr_update`."""
+        await self._send_rr_update(enable_rr=enabled)
+
+    async def cmd_set_recharge_threshold(self, value: int) -> None:
+        """Set `rrConfig.rechargeBat` — battery % below which the mower auto-docks."""
+        await self._send_rr_update(recharge_bat=int(value))
+
+    async def cmd_set_resume_threshold(self, value: int) -> None:
+        """Set `rrConfig.resumeBat` — battery % at which the mower auto-resumes."""
+        await self._send_rr_update(resume_bat=int(value))
 
     async def _wait_for_state(self, expected: set[int], timeout: float) -> bool:
         """Wait until robotInfo.workStatus or robotStatus is in expected, or timeout.

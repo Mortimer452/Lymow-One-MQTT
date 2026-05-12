@@ -45,6 +45,7 @@
       "work_status": {"name": "Work status"},
       "robot_status": {"name": "Robot status"},
       "current_zone": {"name": "Current zone"},
+      "task_zones": {"name": "Task zones"},
       "task_progress": {"name": "Task progress"},
       "mow_time": {"name": "Mow time"},
       "next_schedule": {"name": "Next schedule"},
@@ -78,6 +79,10 @@
     },
     "switch": {
       "auto_recharge": {"name": "Auto recharge & resume"}
+    },
+    "number": {
+      "recharge_threshold": {"name": "Auto-dock below"},
+      "resume_threshold": {"name": "Auto-resume above"}
     }
   }
 }

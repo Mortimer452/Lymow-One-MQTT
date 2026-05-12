@@ -72,6 +72,18 @@ def _current_zone(s):
     return state_mod.derive_current_zone(s)
 
 
+def _task_zones(s):
+    """Comma-separated names of zones in the current task, in mow_order.
+
+    Returns None (not "") when no task is active so the sensor shows as
+    Unknown in the UI rather than misleadingly displaying an empty string.
+    """
+    zones = state_mod.current_task_zones(s)
+    if not zones:
+        return None
+    return ", ".join(z.name for z in zones)
+
+
 def _task_progress(s):
     ci = s.get("cleanInfo")
     if ci is None or not ci.HasField("cleanPercent"):
@@ -130,12 +142,17 @@ def _rtk_quality(s):
     li = s.get("localizationInfo")
     if li is None or not li.HasField("positionQuality"):
         return None
-    pq = li.positionQuality
-    if pq == 1:
-        return "Float fix"
-    if pq == 3:
-        return "Fixed cm"
-    return f"unknown ({pq})"
+    # PbLocalizationInfo.positionQuality enum (decompiled.js:388820-388873).
+    # NOTE: this is the 4-value LocalQuality enum used inside localizationInfo,
+    # NOT the 3-value RtkStatus enum (RTK_NOT_READY/FLOAT/FIX) that lives on
+    # PbRtkDiagnosticL1.rtkStatus. The two are easy to confuse — different
+    # field, different enum.
+    return {
+        0: "No signal",
+        1: "GPS only",   # SINGLE_POINT — standard GPS, no RTK lock
+        2: "Float fix",  # FLOAT_FIXED — RTK sub-meter
+        3: "Fixed cm",   # FIXED — RTK centimeter
+    }.get(li.positionQuality, f"unknown ({li.positionQuality})")
 
 
 def _horizontal_accuracy(s):
@@ -264,6 +281,12 @@ PRIMARY_SENSORS: tuple[LymowSensorDesc, ...] = (
         translation_key="current_zone",
         icon="mdi:map-marker",
         value_fn=_current_zone,
+    ),
+    LymowSensorDesc(
+        key="task_zones",
+        translation_key="task_zones",
+        icon="mdi:format-list-numbered",
+        value_fn=_task_zones,
     ),
     LymowSensorDesc(
         key="task_progress",
@@ -454,23 +477,14 @@ class LymowSensor(LymowEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        # current_zone: expose the full zone catalog so users can discover
-        # zone names + hashIds without external tools. Used by the
-        # lymow_mqtt.start_zones service which accepts either form.
-        if self.entity_description.key == "current_zone":
-            catalog = self.coordinator.state_dict.get("zone_catalog")
-            if catalog is None or not catalog.zones:
-                return {"available_zones": []}
+        # task_zones: expose the ordered list of zone names + count so
+        # template sensors / automations can iterate the queue without
+        # having to split the comma-separated state string.
+        if self.entity_description.key == "task_zones":
+            zones = state_mod.current_task_zones(self.coordinator.state_dict)
             return {
-                "available_zones": [
-                    {
-                        "name": z.name,
-                        "hash_id": z.hash_id,
-                        "mow_order": z.mow_order,
-                        "is_enabled": z.is_enabled,
-                    }
-                    for z in catalog.zones
-                ],
+                "count": len(zones),
+                "zone_names": [z.name for z in zones],
             }
         # warning_code: expose all_codes + label list
         if self.entity_description.key == "warning_code":
@@ -614,6 +628,7 @@ class LymowZoneSensor(LymowEntity, SensorEntity, RestoreEntity):
             "area": None,
             "area_unit": None,
             "mower_in_zone": False,
+            "in_current_task": False,
         }
         catalog = self.coordinator.state_dict.get("zone_catalog")
         if catalog is None:
@@ -625,6 +640,14 @@ class LymowZoneSensor(LymowEntity, SensorEntity, RestoreEntity):
             # on the device card.
             return out
         out["is_enabled"] = zone.is_enabled
+        # in_current_task: per-zone view of `state.current_task_zones`.
+        # Gated identically (workStatus active AND zone.mow_order > 0)
+        # but checked O(1) here since each zone already knows its own
+        # mow_order — no need to enumerate the catalog.
+        out["in_current_task"] = (
+            state_mod.is_task_active(self.coordinator.state_dict)
+            and zone.mow_order > 0
+        )
         if zone.polygon_points:
             area_m2 = state_mod.polygon_area(zone.polygon_points)
             # Lazy import — HA's unit conversion utilities aren't available
@@ -646,11 +669,13 @@ class LymowZoneSensor(LymowEntity, SensorEntity, RestoreEntity):
                     1,
                 )
                 out["area_unit"] = UnitOfArea.SQUARE_FEET
-            pose = self.coordinator.state_dict.get("pose")
-            if pose is not None and hasattr(pose, "x") and hasattr(pose, "y"):
-                out["mower_in_zone"] = state_mod.point_in_polygon(
-                    pose.x, pose.y, zone.polygon_points
-                )
+            # Shared answer: which zone the mower is in is computed once
+            # at coordinator pboutput-merge time (state.compute_current_zone_cache)
+            # and looked up here. For yards with many zones this is the
+            # difference between one polygon test per pboutput and N per
+            # state refresh.
+            current = state_mod.zone_at_pose(self.coordinator.state_dict)
+            out["mower_in_zone"] = current is not None and current.hash_id == self._hash_id
         return out
 
 

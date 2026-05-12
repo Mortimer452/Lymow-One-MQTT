@@ -1,11 +1,11 @@
 {
   "domain": "lymow_mqtt",
   "name": "Lymow One MQTT",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "config_flow": true,
   "documentation": "https://github.com/Mortimer452/Lymow-One-MQTT",
   "issue_tracker": "https://github.com/Mortimer452/Lymow-One-MQTT/issues",
-  "requirements": ["pycognito==2024.5.1", "protobuf>=5.26.1"],
+  "requirements": ["pycognito==2024.5.1", "protobuf>=5.26.1", "Pillow>=10.0"],
   "iot_class": "cloud_push",
   "codeowners": ["@Mortimer452"],
   "integration_type": "device",

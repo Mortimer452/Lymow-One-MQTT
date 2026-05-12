@@ -200,6 +200,144 @@ class TestActiveCutConfig:
         assert result == {"cut_speed": None, "cut_height": None, "move_speed": None}
 
 
+class TestCurrentZoneCache:
+    """The cache populated by ``compute_current_zone_cache`` is what makes
+    pose-in-polygon work O(1) per consumer instead of O(N) per call. These
+    tests pin down the contract every consumer relies on.
+    """
+
+    def _state_with_zones(self, pose_xy):
+        from lymow_mqtt.protocol import ZoneCatalog, ZoneInfo
+
+        class _P:
+            def __init__(self, x, y): self.x, self.y = x, y
+
+        z1 = ZoneInfo(
+            hash_id="aaa11111", name="Front",
+            mow_order=0, is_enabled=True,
+            polygon_points=[(0, 0), (5, 0), (5, 5), (0, 5)],
+        )
+        z2 = ZoneInfo(
+            hash_id="bbb22222", name="Back",
+            mow_order=1, is_enabled=True,
+            polygon_points=[(10, 10), (15, 10), (15, 15), (10, 15)],
+        )
+        cat = ZoneCatalog()
+        cat.zones.extend([z1, z2])
+        cat.zones_by_hashid[z1.hash_id] = z1
+        cat.zones_by_hashid[z2.hash_id] = z2
+        return {
+            "pose": _P(*pose_xy),
+            "zone_catalog": cat,
+        }
+
+    def test_cache_populated_with_containing_zone_hash(self):
+        from lymow_mqtt import state as state_mod
+        s = self._state_with_zones((2.5, 2.5))
+        result = state_mod.compute_current_zone_cache(s)
+        assert result == "aaa11111"
+        assert s["_current_zone_hash_id"] == "aaa11111"
+
+    def test_cache_populated_with_none_when_pose_outside_all_zones(self):
+        from lymow_mqtt import state as state_mod
+        s = self._state_with_zones((100, 100))
+        result = state_mod.compute_current_zone_cache(s)
+        assert result is None
+        assert s["_current_zone_hash_id"] is None  # key present, value None
+
+    def test_zone_at_pose_reads_cache_when_present(self):
+        from lymow_mqtt import state as state_mod
+        s = self._state_with_zones((2.5, 2.5))
+        # Pre-populate cache with a value that disagrees with pose.
+        # zone_at_pose should trust the cache, not re-walk.
+        s["_current_zone_hash_id"] = "bbb22222"
+        zone = state_mod.zone_at_pose(s)
+        assert zone is not None
+        assert zone.hash_id == "bbb22222"
+
+    def test_zone_at_pose_falls_back_to_live_walk_when_cache_missing(self):
+        from lymow_mqtt import state as state_mod
+        s = self._state_with_zones((2.5, 2.5))
+        assert "_current_zone_hash_id" not in s
+        zone = state_mod.zone_at_pose(s)
+        assert zone is not None
+        assert zone.hash_id == "aaa11111"
+
+    def test_cache_handles_missing_pose_or_catalog(self):
+        from lymow_mqtt import state as state_mod
+        # No pose
+        assert state_mod.compute_current_zone_cache({"zone_catalog": object()}) is None
+        # No catalog
+        s = {"pose": object()}
+        assert state_mod.compute_current_zone_cache(s) is None
+        # Both missing
+        assert state_mod.compute_current_zone_cache({}) is None
+
+
+class TestTaskZonesHelpers:
+    """`is_task_active` + `current_task_zones` are the shared predicates the
+    Task Zones sensor, per-zone in_current_task attribute, and map camera
+    task-highlight gate all consult.
+    """
+
+    def _state(self, work_status, task_orders):
+        from lymow_mqtt.protocol import ZoneCatalog, ZoneInfo
+
+        class _RI:
+            def __init__(self, ws): self.workStatus = ws
+
+        cat = ZoneCatalog()
+        for i, (name, order) in enumerate(task_orders):
+            z = ZoneInfo(
+                hash_id=f"h{i:03d}", name=name,
+                mow_order=order, is_enabled=True,
+                polygon_points=[(0, 0), (1, 0), (1, 1), (0, 1)],
+            )
+            cat.zones.append(z)
+            cat.zones_by_hashid[z.hash_id] = z
+        return {"zone_catalog": cat, "robotInfo": _RI(work_status)}
+
+    def test_is_task_active_true_for_mowing(self):
+        from lymow_mqtt import state as state_mod
+        # WORK_STATUS_MOWING = 2
+        s = self._state(2, [])
+        assert state_mod.is_task_active(s) is True
+
+    def test_is_task_active_false_for_idle(self):
+        from lymow_mqtt import state as state_mod
+        # WORK_STATUS_WAITING = 1 (not in ACTIVE_TASK_STATUSES)
+        s = self._state(1, [])
+        assert state_mod.is_task_active(s) is False
+
+    def test_is_task_active_false_when_robotinfo_missing(self):
+        from lymow_mqtt import state as state_mod
+        assert state_mod.is_task_active({}) is False
+
+    def test_current_task_zones_sorted_by_mow_order(self):
+        from lymow_mqtt import state as state_mod
+        # Insert zones in random mow_order — helper must sort.
+        s = self._state(2, [
+            ("Pool", 3),
+            ("Front", 1),
+            ("Garden", 0),   # not in task
+            ("Back", 2),
+        ])
+        zones = state_mod.current_task_zones(s)
+        assert [z.name for z in zones] == ["Front", "Back", "Pool"]
+
+    def test_current_task_zones_empty_when_not_active(self):
+        from lymow_mqtt import state as state_mod
+        # Same zones, but workStatus says Waiting → residual mow_order
+        # values shouldn't be reported as "current task".
+        s = self._state(1, [("Front", 1), ("Back", 2)])
+        assert state_mod.current_task_zones(s) == []
+
+    def test_current_task_zones_empty_when_no_zones_have_mow_order(self):
+        from lymow_mqtt import state as state_mod
+        s = self._state(2, [("Front", 0), ("Back", 0)])
+        assert state_mod.current_task_zones(s) == []
+
+
 from datetime import UTC, datetime, timedelta
 
 
