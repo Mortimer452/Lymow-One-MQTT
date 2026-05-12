@@ -390,10 +390,6 @@ USER_CTRL_QUERY_RTK_L1 = 57                # not used in v1
 USER_CTRL_QUERY_RTK_L2 = 58                # not used in v1
 
 
-# work status values where the mower has an active task (arch.md §8b)
-ACTIVE_TASK_WORK_STATUSES = frozenset({2, 3, 4, 7, 8, 9, 10, 14})
-
-
 # ─────────────────────────────────────────────
 # Warning code labels (extend as discovered)
 # ─────────────────────────────────────────────

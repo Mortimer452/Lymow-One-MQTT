@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from math import cos, radians
 from typing import Any
 
-from .const import ACTIVE_TASK_WORK_STATUSES
+from .const import ACTIVE_TASK_STATUSES
 
 
 def enu_to_lla(ebp, pose) -> tuple[float, float] | None:
@@ -252,6 +252,44 @@ def zone_at_pose(state_dict: dict[str, Any]):
     return None
 
 
+def is_task_active(state_dict: dict[str, Any]) -> bool:
+    """True iff robotInfo.workStatus says a mow task is currently underway.
+
+    Single source of truth for the "is there an in-progress task right now"
+    predicate. Used by:
+      - The Task Zones sensor (shows current task or None).
+      - Per-zone ``in_current_task`` attribute.
+      - The map camera's green-zone task-highlight gate.
+
+    Mirrors the ``ACTIVE_TASK_STATUSES`` set: Mowing / Pause / Docking /
+    Error / Resume / ZonePartition / PauseDocking / Escaping. A
+    freshly-completed task has its workStatus reset to Waiting, so residual
+    mow_order values left in the catalog don't get treated as "still active".
+    """
+    ri = state_dict.get("robotInfo")
+    if ri is None:
+        return False
+    return getattr(ri, "workStatus", 0) in ACTIVE_TASK_STATUSES
+
+
+def current_task_zones(state_dict: dict[str, Any]) -> list:
+    """Return ZoneInfo objects in the current mow task, ordered by mow_order.
+
+    Empty list when no task is active or no zones have ``mow_order > 0``.
+    Both the Task Zones sensor (which joins names for its state) and any
+    other future "what's queued" consumer should read from this — it's the
+    canonical "current task" definition.
+    """
+    if not is_task_active(state_dict):
+        return []
+    catalog = state_dict.get("zone_catalog")
+    if catalog is None:
+        return []
+    task_zones = [z for z in catalog.zones if z.mow_order > 0]
+    task_zones.sort(key=lambda z: z.mow_order)
+    return task_zones
+
+
 def derive_current_zone(state_dict: dict[str, Any]) -> str | None:
     """Derive 'which zone is the mower physically in right now'.
 
@@ -277,7 +315,7 @@ def derive_current_zone(state_dict: dict[str, Any]) -> str | None:
         return None
 
     work_status = getattr(robot_info, "workStatus", 0)
-    if work_status not in ACTIVE_TASK_WORK_STATUSES:
+    if work_status not in ACTIVE_TASK_STATUSES:
         return None
 
     zone = zone_at_pose(state_dict)

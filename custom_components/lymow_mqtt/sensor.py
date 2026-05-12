@@ -72,6 +72,18 @@ def _current_zone(s):
     return state_mod.derive_current_zone(s)
 
 
+def _task_zones(s):
+    """Comma-separated names of zones in the current task, in mow_order.
+
+    Returns None (not "") when no task is active so the sensor shows as
+    Unknown in the UI rather than misleadingly displaying an empty string.
+    """
+    zones = state_mod.current_task_zones(s)
+    if not zones:
+        return None
+    return ", ".join(z.name for z in zones)
+
+
 def _task_progress(s):
     ci = s.get("cleanInfo")
     if ci is None or not ci.HasField("cleanPercent"):
@@ -271,6 +283,12 @@ PRIMARY_SENSORS: tuple[LymowSensorDesc, ...] = (
         value_fn=_current_zone,
     ),
     LymowSensorDesc(
+        key="task_zones",
+        translation_key="task_zones",
+        icon="mdi:format-list-numbered",
+        value_fn=_task_zones,
+    ),
+    LymowSensorDesc(
         key="task_progress",
         translation_key="task_progress",
         state_class=SensorStateClass.MEASUREMENT,
@@ -459,6 +477,15 @@ class LymowSensor(LymowEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
+        # task_zones: expose the ordered list of zone names + count so
+        # template sensors / automations can iterate the queue without
+        # having to split the comma-separated state string.
+        if self.entity_description.key == "task_zones":
+            zones = state_mod.current_task_zones(self.coordinator.state_dict)
+            return {
+                "count": len(zones),
+                "zone_names": [z.name for z in zones],
+            }
         # warning_code: expose all_codes + label list
         if self.entity_description.key == "warning_code":
             codes = self.coordinator.state_dict.get("warningCodes") or []
@@ -601,6 +628,7 @@ class LymowZoneSensor(LymowEntity, SensorEntity, RestoreEntity):
             "area": None,
             "area_unit": None,
             "mower_in_zone": False,
+            "in_current_task": False,
         }
         catalog = self.coordinator.state_dict.get("zone_catalog")
         if catalog is None:
@@ -612,6 +640,14 @@ class LymowZoneSensor(LymowEntity, SensorEntity, RestoreEntity):
             # on the device card.
             return out
         out["is_enabled"] = zone.is_enabled
+        # in_current_task: per-zone view of `state.current_task_zones`.
+        # Gated identically (workStatus active AND zone.mow_order > 0)
+        # but checked O(1) here since each zone already knows its own
+        # mow_order — no need to enumerate the catalog.
+        out["in_current_task"] = (
+            state_mod.is_task_active(self.coordinator.state_dict)
+            and zone.mow_order > 0
+        )
         if zone.polygon_points:
             area_m2 = state_mod.polygon_area(zone.polygon_points)
             # Lazy import — HA's unit conversion utilities aren't available

@@ -274,6 +274,70 @@ class TestCurrentZoneCache:
         assert state_mod.compute_current_zone_cache({}) is None
 
 
+class TestTaskZonesHelpers:
+    """`is_task_active` + `current_task_zones` are the shared predicates the
+    Task Zones sensor, per-zone in_current_task attribute, and map camera
+    task-highlight gate all consult.
+    """
+
+    def _state(self, work_status, task_orders):
+        from lymow_mqtt.protocol import ZoneCatalog, ZoneInfo
+
+        class _RI:
+            def __init__(self, ws): self.workStatus = ws
+
+        cat = ZoneCatalog()
+        for i, (name, order) in enumerate(task_orders):
+            z = ZoneInfo(
+                hash_id=f"h{i:03d}", name=name,
+                mow_order=order, is_enabled=True,
+                polygon_points=[(0, 0), (1, 0), (1, 1), (0, 1)],
+            )
+            cat.zones.append(z)
+            cat.zones_by_hashid[z.hash_id] = z
+        return {"zone_catalog": cat, "robotInfo": _RI(work_status)}
+
+    def test_is_task_active_true_for_mowing(self):
+        from lymow_mqtt import state as state_mod
+        # WORK_STATUS_MOWING = 2
+        s = self._state(2, [])
+        assert state_mod.is_task_active(s) is True
+
+    def test_is_task_active_false_for_idle(self):
+        from lymow_mqtt import state as state_mod
+        # WORK_STATUS_WAITING = 1 (not in ACTIVE_TASK_STATUSES)
+        s = self._state(1, [])
+        assert state_mod.is_task_active(s) is False
+
+    def test_is_task_active_false_when_robotinfo_missing(self):
+        from lymow_mqtt import state as state_mod
+        assert state_mod.is_task_active({}) is False
+
+    def test_current_task_zones_sorted_by_mow_order(self):
+        from lymow_mqtt import state as state_mod
+        # Insert zones in random mow_order — helper must sort.
+        s = self._state(2, [
+            ("Pool", 3),
+            ("Front", 1),
+            ("Garden", 0),   # not in task
+            ("Back", 2),
+        ])
+        zones = state_mod.current_task_zones(s)
+        assert [z.name for z in zones] == ["Front", "Back", "Pool"]
+
+    def test_current_task_zones_empty_when_not_active(self):
+        from lymow_mqtt import state as state_mod
+        # Same zones, but workStatus says Waiting → residual mow_order
+        # values shouldn't be reported as "current task".
+        s = self._state(1, [("Front", 1), ("Back", 2)])
+        assert state_mod.current_task_zones(s) == []
+
+    def test_current_task_zones_empty_when_no_zones_have_mow_order(self):
+        from lymow_mqtt import state as state_mod
+        s = self._state(2, [("Front", 0), ("Back", 0)])
+        assert state_mod.current_task_zones(s) == []
+
+
 from datetime import UTC, datetime, timedelta
 
 

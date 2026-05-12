@@ -31,7 +31,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import map_render, signal_grid as _sg, state
-from .const import ACTIVE_TASK_STATUSES, DOMAIN, RTSP_PATH, RTSP_PORT
+from .const import DOMAIN, RTSP_PATH, RTSP_PORT
 from .coordinator import LymowCoordinator
 from .entity_base import LymowEntity
 
@@ -110,9 +110,7 @@ class LymowMapCamera(LymowEntity, Camera):
         pose = s.get("pose")
         dock = s.get("chargingStationLoc")
         current_zone = state.derive_current_zone(s)
-        ri = s.get("robotInfo")
-        work_status = getattr(ri, "workStatus", None) if ri is not None else None
-        task_active = work_status in ACTIVE_TASK_STATUSES
+        task_active = state.is_task_active(s)
 
         # Pillow is sync and polygon rasterization can take a few ms on
         # busy maps — keep it out of the event loop.
