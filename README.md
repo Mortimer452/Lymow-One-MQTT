@@ -13,7 +13,7 @@ Whatever you do in the app, this HA integration will see it, too, most sensors u
 
 The integration is strictly-passive by design, just listens to messages sent by the mower. Message updates (battery level, time elapsed, percent complete, current zone, etc) occur roughly every 30-60 seconds during mowing, but much slower during charging (5-15 minutes)
 
-> **Status:** v0.4.0 — adds a lawn-map camera with signal-quality heat overlay, recharge/resume battery threshold controls, and a Task Zones sensor. Carries forward the v0.3.x auto-recharge switch + MQTT reliability work. Tested on Lymow One. **Lymow One Plus** is expected to work but is unverified — please open an issue if you have one.
+> **Status:** v0.4.1 — patch: keeps the lawn-map camera from breaking while the official Lymow app is open. Plus the v0.4.0 feature set (lawn-map camera with signal-quality heat overlay, recharge/resume battery threshold controls, Task Zones sensor) and the v0.3.x auto-recharge switch + MQTT reliability work. Tested on Lymow One. **Lymow One Plus** is expected to work but is unverified — please open an issue if you have one.
 
 ## Features
 

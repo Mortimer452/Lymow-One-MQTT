@@ -83,6 +83,33 @@ def point_in_polygon(x: float, y: float, polygon: list[tuple[float, float]]) -> 
     return inside
 
 
+def is_real_zone_catalog(new_catalog) -> bool:
+    """Heuristic: did `parse_zone_catalog` actually walk a PbMap-bearing blob?
+
+    A QUERY_PATH response shares the btMap branch with QUERY_MAP but carries
+    only path data — no PbMap structure inside. ``parse_zone_catalog``
+    returns an *empty* ``ZoneCatalog`` for those (no zones, no channels,
+    no runtime_config, no enu_base_point). The official app's heartbeat
+    fires QUERY_PATH bursts every time the user opens it, so without this
+    guard the integration's cached catalog gets stomped to empty every
+    couple of seconds, making the map camera entity flip to unavailable
+    and dropping the camera entity's access_token from state attributes
+    (which produces the `token=undefined` URL the HA frontend then
+    fails to authenticate).
+
+    Returns True iff the parsed catalog has at least one signal that it
+    came from a real PbMap. Mirrors the conditional already applied to
+    ``enu_base_point`` in the coordinator. See the
+    ``project_btmap_sticky_fields`` project memory + arch.md §8c.
+    """
+    return bool(
+        new_catalog.zones
+        or new_catalog.channels
+        or new_catalog.runtime_config is not None
+        or new_catalog.enu_base_point is not None
+    )
+
+
 def merge_pboutput(state_dict: dict[str, Any], msg) -> None:
     """Merge populated submessages from a PbOutput into the state dict.
 
