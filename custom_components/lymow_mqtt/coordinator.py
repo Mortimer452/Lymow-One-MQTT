@@ -233,21 +233,23 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._state["errorCodes"] = []
             self._prev_robot_status = new_robot_status
 
-        # Cache parsed zone catalog whenever a btMap-bearing message arrives
+        # Cache parsed zone catalog whenever a btMap-bearing message arrives.
+        # QUERY_PATH responses share this branch with QUERY_MAP but parse to
+        # an empty catalog (no PbMap structure). Without the sticky guard
+        # below, every app-triggered QUERY_PATH burst would clobber the
+        # catalog → the map camera entity would lose its zones, flip to
+        # unavailable, drop its access_token from state attributes, and the
+        # frontend would produce `?token=undefined` URLs that 403. Same
+        # pattern enu_base_point uses — extended to the whole catalog now.
+        # See arch.md §8c + `project_btmap_sticky_fields` memory.
         if msg.btMap.ByteSize() > 200:
             try:
                 new_catalog = protocol.parse_zone_catalog(msg.btMap)
-                self._state["zone_catalog"] = new_catalog
-                # Promote enu_base_point to its own sticky state slot —
-                # only update when the new catalog actually carries it.
-                # QUERY_PATH responses share this branch but parse to an
-                # empty catalog (no PbMap structure); without this conditional
-                # we'd lose the dock-anchor every time the user opens the
-                # app and triggers QUERY_PATH bursts. See arch.md §8c +
-                # `project_btmap_sticky_fields` memory.
-                ebp = getattr(new_catalog, "enu_base_point", None)
-                if ebp is not None:
-                    self._state["enu_base_point"] = ebp
+                if state.is_real_zone_catalog(new_catalog):
+                    self._state["zone_catalog"] = new_catalog
+                    ebp = getattr(new_catalog, "enu_base_point", None)
+                    if ebp is not None:
+                        self._state["enu_base_point"] = ebp
             except Exception:
                 _LOGGER.exception("Failed to parse zone catalog")
 

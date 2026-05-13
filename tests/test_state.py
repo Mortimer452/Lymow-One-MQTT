@@ -131,6 +131,62 @@ class TestMergePbOutput:
         assert s.get("errorCodes") == [45]  # unchanged
 
 
+class TestIsRealZoneCatalog:
+    """Sticky-field guard. QUERY_PATH responses produce an empty ZoneCatalog
+    that should NOT replace a previously-populated one — see the long
+    comment on the function for the failure mode (camera goes unavailable,
+    frontend builds `?token=undefined` URLs).
+    """
+
+    def _empty(self):
+        from lymow_mqtt.protocol import ZoneCatalog
+        return ZoneCatalog()
+
+    def _with_zone(self):
+        from lymow_mqtt.protocol import ZoneCatalog, ZoneInfo
+        c = ZoneCatalog()
+        z = ZoneInfo(
+            hash_id="abc12345", name="Pool",
+            mow_order=0, is_enabled=True,
+            polygon_points=[(0, 0), (1, 0), (1, 1)],
+        )
+        c.zones.append(z)
+        c.zones_by_hashid[z.hash_id] = z
+        return c
+
+    def test_empty_catalog_is_not_real(self):
+        from lymow_mqtt import state as state_mod
+        assert state_mod.is_real_zone_catalog(self._empty()) is False
+
+    def test_catalog_with_zones_is_real(self):
+        from lymow_mqtt import state as state_mod
+        assert state_mod.is_real_zone_catalog(self._with_zone()) is True
+
+    def test_catalog_with_only_channels_is_real(self):
+        from lymow_mqtt.protocol import ChannelInfo, ZoneCatalog
+        from lymow_mqtt import state as state_mod
+        c = ZoneCatalog()
+        c.channels.append(ChannelInfo(
+            hash_id="ch1", zone1="a", zone2="b",
+            is_docking_channel=False, polygon_points=[(0, 0), (1, 0), (1, 1)],
+        ))
+        assert state_mod.is_real_zone_catalog(c) is True
+
+    def test_catalog_with_only_runtime_config_is_real(self):
+        from lymow_mqtt.protocol import ZoneCatalog
+        from lymow_mqtt import state as state_mod
+        c = ZoneCatalog()
+        c.runtime_config = object()  # any non-None sentinel
+        assert state_mod.is_real_zone_catalog(c) is True
+
+    def test_catalog_with_only_enu_base_point_is_real(self):
+        from lymow_mqtt.protocol import ZoneCatalog
+        from lymow_mqtt import state as state_mod
+        c = ZoneCatalog()
+        c.enu_base_point = object()
+        assert state_mod.is_real_zone_catalog(c) is True
+
+
 class TestActiveCutConfig:
     def test_falls_through_to_runtime_when_no_zone(self):
         # PbRunTimeConfig (the global runtime config from PbMap.runTimeConfig)
