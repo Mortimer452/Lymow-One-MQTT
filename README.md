@@ -2,7 +2,7 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![GitHub release](https://img.shields.io/github/release/Mortimer452/Lymow-One-MQTT.svg)](https://github.com/Mortimer452/Lymow-One-MQTT/releases)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/Mortimer452/Lymow-One-MQTT/blob/main/LICENSE)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-support-yellow?logo=buy-me-a-coffee)](https://buymeacoffee.com/mortimer452)
 
 Home Assistant integration for the **Lymow One** robotic lawn mower.
