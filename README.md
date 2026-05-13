@@ -30,6 +30,8 @@ The integration is strictly-passive by design, just listens to messages sent by 
 
 ## Install (HACS custom repository)
 
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Mortimer452&repository=Lymow-One-MQTT&category=integration)
+
 1. Open HACS → **Custom repositories** → **+**
 2. Repository: `https://github.com/Mortimer452/Lymow-One-MQTT`
 3. Type: **Integration**
