@@ -589,7 +589,8 @@ class LymowZoneSensor(LymowEntity, SensorEntity, RestoreEntity):
                 zone_ids = list(report.cleanInfo.areaInfo.cleanZoneIds)
             except (AttributeError, TypeError):
                 zone_ids = []
-            if self._hash_id in zone_ids:
+            cancelled = getattr(report, "mowEndType", 0) == 2
+            if self._hash_id in zone_ids and not cancelled:
                 self._last_mowed_ts = datetime.now(UTC)
                 self._mow_count += 1
                 # cleanTime is int32 minutes — same field/unit as the existing
