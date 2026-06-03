@@ -166,6 +166,17 @@ STATE_MATRIX: list[StateRow] = [
     ),
 
     # ─────────────────────────────────────────────────────────────────
+    # 2b. Physical WAITING — mower stopped away from dock (e.g. post-cancel)
+    # ─────────────────────────────────────────────────────────────────
+    StateRow(
+        robot_status=WORK_STATUS_WAITING,
+        activity=ACTIVITY_PAUSED,
+        start_mowing=USER_CTRL_CLEAN,
+        dock=USER_CTRL_RECHARGE_DOCK,
+        note="rs=WAITING — stopped in yard, Start fires fresh CLEAN(1), Dock sends home",
+    ),
+
+    # ─────────────────────────────────────────────────────────────────
     # 3. Charging at dock — fork on isRecharging (saved task vs idle)
     # ─────────────────────────────────────────────────────────────────
     StateRow(
