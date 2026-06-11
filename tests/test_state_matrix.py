@@ -177,11 +177,21 @@ class TestPauseDockingState:
 
 
 class TestIdleStates:
-    @pytest.mark.parametrize("ws", [WORK_STATUS_WAITING, WORK_STATUS_NONE])
-    def test_idle_offers_only_start(self, ws):
+    def test_rs_waiting_shows_paused_with_start_and_dock(self):
         row = state_matrix.lookup(
-            work_status=ws,
-            robot_status=ws,
+            work_status=WORK_STATUS_WAITING,
+            robot_status=WORK_STATUS_WAITING,
+            is_recharging=False,
+        )
+        assert row.activity == "paused"
+        assert row.start_mowing == USER_CTRL_CLEAN
+        assert row.pause is None
+        assert row.dock == USER_CTRL_RECHARGE_DOCK
+
+    def test_ws_none_idle_offers_only_start(self):
+        row = state_matrix.lookup(
+            work_status=WORK_STATUS_NONE,
+            robot_status=WORK_STATUS_NONE,
             is_recharging=False,
         )
         assert row.activity == "docked"
