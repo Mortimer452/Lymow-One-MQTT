@@ -172,7 +172,9 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_catalog_query_at = datetime.now(UTC)
 
         # Kick off the REST poll task
-        self._rest_poll_task = self.hass.async_create_task(self._rest_poll_loop())
+        self._rest_poll_task = self.hass.async_create_background_task(
+            self._rest_poll_loop(), f"{self.thing_name} REST poll"
+        )
 
     async def async_unload(self) -> None:
         # Set shutdown flag BEFORE disconnecting so the disconnect callback
