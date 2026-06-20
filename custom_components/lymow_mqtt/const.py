@@ -48,36 +48,40 @@ COGNITO_CONFIG: dict[str, dict] = {
 
 API_ENDPOINTS: dict[str, dict] = {
     "eu-west-1": {
-        "deviceBindingApi": "https://asjqh5wbtj.execute-api.eu-west-1.amazonaws.com/prod",
-        "deviceProfileApi": "https://6ghz1zkccg.execute-api.eu-west-1.amazonaws.com/prod",
-        "checkUpdateApi":   "https://eigc6a2ds9.execute-api.eu-west-1.amazonaws.com/prod",
-        "userAccountApi":   "https://l3hazobjk0.execute-api.eu-west-1.amazonaws.com/prod",
-        "s3Api":            "https://3q1zxz98l2.execute-api.eu-west-1.amazonaws.com/prod",
-        "iotDomain":        "a3j5zqqo5iuph9-ats.iot.eu-west-1.amazonaws.com",
+        "deviceBindingApi":  "https://asjqh5wbtj.execute-api.eu-west-1.amazonaws.com/prod",
+        "deviceProfileApi":  "https://6ghz1zkccg.execute-api.eu-west-1.amazonaws.com/prod",
+        "checkUpdateApi":    "https://eigc6a2ds9.execute-api.eu-west-1.amazonaws.com/prod",
+        "createOtaJobApi":   "https://io4nsakkt8.execute-api.eu-west-1.amazonaws.com/prod",
+        "userAccountApi":    "https://l3hazobjk0.execute-api.eu-west-1.amazonaws.com/prod",
+        "s3Api":             "https://3q1zxz98l2.execute-api.eu-west-1.amazonaws.com/prod",
+        "iotDomain":         "a3j5zqqo5iuph9-ats.iot.eu-west-1.amazonaws.com",
     },
     "ap-southeast-2": {
-        "deviceBindingApi": "https://1sfa49lnl8.execute-api.ap-southeast-2.amazonaws.com/prod",
-        "deviceProfileApi": "https://7k2iuc99h7.execute-api.ap-southeast-2.amazonaws.com/prod",
-        "checkUpdateApi":   "https://v7tlj1gnw7.execute-api.ap-southeast-2.amazonaws.com/prod",
-        "userAccountApi":   "https://l2gobpcoqc.execute-api.ap-southeast-2.amazonaws.com/prod",
-        "s3Api":            "https://2xipi98nw3.execute-api.ap-southeast-2.amazonaws.com/prod",
-        "iotDomain":        "a3j5zqqo5iuph9-ats.iot.ap-southeast-2.amazonaws.com",
+        "deviceBindingApi":  "https://1sfa49lnl8.execute-api.ap-southeast-2.amazonaws.com/prod",
+        "deviceProfileApi":  "https://7k2iuc99h7.execute-api.ap-southeast-2.amazonaws.com/prod",
+        "checkUpdateApi":    "https://v7tlj1gnw7.execute-api.ap-southeast-2.amazonaws.com/prod",
+        "createOtaJobApi":   "https://19d2hfwavg.execute-api.ap-southeast-2.amazonaws.com/prod",
+        "userAccountApi":    "https://l2gobpcoqc.execute-api.ap-southeast-2.amazonaws.com/prod",
+        "s3Api":             "https://2xipi98nw3.execute-api.ap-southeast-2.amazonaws.com/prod",
+        "iotDomain":         "a3j5zqqo5iuph9-ats.iot.ap-southeast-2.amazonaws.com",
     },
     "us-east-2": {
-        "deviceBindingApi": "https://453ahng0z4.execute-api.us-east-2.amazonaws.com/prod",
-        "deviceProfileApi": "https://xuw7gtx113.execute-api.us-east-2.amazonaws.com/prod",
-        "checkUpdateApi":   "https://6at3p6r6ce.execute-api.us-east-2.amazonaws.com/prod",
-        "userAccountApi":   "https://6r8m5rxeth.execute-api.us-east-2.amazonaws.com/prod",
-        "s3Api":            "https://suk4e76xe5.execute-api.us-east-2.amazonaws.com/prod",
-        "iotDomain":        "a3j5zqqo5iuph9-ats.iot.us-east-2.amazonaws.com",
+        "deviceBindingApi":  "https://453ahng0z4.execute-api.us-east-2.amazonaws.com/prod",
+        "deviceProfileApi":  "https://xuw7gtx113.execute-api.us-east-2.amazonaws.com/prod",
+        "checkUpdateApi":    "https://6at3p6r6ce.execute-api.us-east-2.amazonaws.com/prod",
+        "createOtaJobApi":   "https://bpath65iid.execute-api.us-east-2.amazonaws.com/prod",
+        "userAccountApi":    "https://6r8m5rxeth.execute-api.us-east-2.amazonaws.com/prod",
+        "s3Api":             "https://suk4e76xe5.execute-api.us-east-2.amazonaws.com/prod",
+        "iotDomain":         "a3j5zqqo5iuph9-ats.iot.us-east-2.amazonaws.com",
     },
     "ap-east-1": {
-        "deviceBindingApi": "https://08ydw34dfj.execute-api.ap-east-1.amazonaws.com/prod",
-        "deviceProfileApi": "https://i1pbnu30si.execute-api.ap-east-1.amazonaws.com/prod",
-        "checkUpdateApi":   "https://kdueg6qcwl.execute-api.ap-east-1.amazonaws.com/prod",
-        "userAccountApi":   "https://1h2q9awtqd.execute-api.ap-east-1.amazonaws.com/prod",
-        "s3Api":            "https://m35t3px95i.execute-api.ap-east-1.amazonaws.com/prod",
-        "iotDomain":        "a3j5zqqo5iuph9-ats.iot.ap-east-1.amazonaws.com",
+        "deviceBindingApi":  "https://08ydw34dfj.execute-api.ap-east-1.amazonaws.com/prod",
+        "deviceProfileApi":  "https://i1pbnu30si.execute-api.ap-east-1.amazonaws.com/prod",
+        "checkUpdateApi":    "https://kdueg6qcwl.execute-api.ap-east-1.amazonaws.com/prod",
+        "createOtaJobApi":   "https://4gr97nlmga.execute-api.ap-east-1.amazonaws.com/prod",
+        "userAccountApi":    "https://1h2q9awtqd.execute-api.ap-east-1.amazonaws.com/prod",
+        "s3Api":             "https://m35t3px95i.execute-api.ap-east-1.amazonaws.com/prod",
+        "iotDomain":         "a3j5zqqo5iuph9-ats.iot.ap-east-1.amazonaws.com",
     },
 }
 
@@ -384,6 +388,8 @@ USER_CTRL_PAUSE_DOCK = 21                  # pause from DOCKING
 USER_CTRL_RESUME_DOCK = 22                 # resume from PAUSE_DOCKING
 USER_CTRL_FORCE_REINIT = 28                # cancel-task button; stops in place
 USER_CTRL_RECHARGE_DOCK = 33               # dock + keep task progress
+USER_CTRL_OTA = 26                             # firmware-internal; not sent by app OTA flow
+USER_CTRL_ABORT_OTA = 27                       # cancel in-progress OTA (unexercised in app)
 USER_CTRL_QUERY_RUN_TIME_CONFIG = 51
 USER_CTRL_QUERY_NET_DETAIL = 53            # not used in v1
 USER_CTRL_QUERY_RTK_L1 = 57                # not used in v1

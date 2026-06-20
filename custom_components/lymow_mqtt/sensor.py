@@ -176,9 +176,9 @@ def _lte_signal(s):
 
 def _firmware(s):
     di = s.get("deviceInfo")
-    return (
-        di.softwareVersion if di and di.HasField("softwareVersion") else None
-    )
+    if di and di.HasField("softwareVersion"):
+        return di.softwareVersion
+    return s.get("rest_firmware_version")
 
 
 def _ip_address(s):
