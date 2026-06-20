@@ -530,7 +530,7 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 _LOGGER.exception("REST poll cycle failed; will retry next interval")
 
     async def _do_rest_poll(self) -> None:
-        """Fetch /get-device-info, update online + IP."""
+        """Fetch /get-device-info, update online + IP + firmware version."""
         info = await self.rest.get_device_info(self.thing_name)
         if not info:
             self._rest_online = False
@@ -540,6 +540,14 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ip = info.get("ipAddress") or info.get("ip_address")
             if ip:
                 self._state["rest_ip_address"] = ip
+            fw = (
+                info.get("softwareVersion")
+                or info.get("software_version")
+                or info.get("fwVersion")
+                or info.get("fw_version")
+            )
+            if fw and isinstance(fw, str):
+                self._state["rest_firmware_version"] = fw
         self.async_set_updated_data(self._state)
 
     # ── Command dispatch ────────────────────────────────────────

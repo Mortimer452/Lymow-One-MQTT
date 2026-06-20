@@ -23,6 +23,8 @@ class LymowEntity(CoordinatorEntity[LymowCoordinator]):
         s = self.coordinator.state_dict
         di = s.get("deviceInfo")
         sw = di.softwareVersion if di and di.HasField("softwareVersion") else None
+        if sw is None:
+            sw = s.get("rest_firmware_version")
         return DeviceInfo(
             identifiers={(DOMAIN, self.coordinator.thing_name)},
             manufacturer=MANUFACTURER,

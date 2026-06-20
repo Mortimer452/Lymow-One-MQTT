@@ -83,6 +83,9 @@
     "number": {
       "recharge_threshold": {"name": "Auto-dock below"},
       "resume_threshold": {"name": "Auto-resume above"}
+    },
+    "update": {
+      "firmware_update": {"name": "Firmware update"}
     }
   }
 }

@@ -71,6 +71,34 @@ class LymowREST:
         )
         return data or {}
 
+    async def check_update(self, thing_name: str) -> dict | None:
+        """Check for a firmware update. Returns {latestVersion, releaseNote}."""
+        data = await self._get(
+            "checkUpdateApi",
+            f"/check-update?deviceThingName={thing_name}",
+        )
+        return data if isinstance(data, dict) else None
+
+    async def create_ota_job(self, thing_name: str, object_key: str) -> str | None:
+        """Trigger an OTA update via AWS IoT Jobs. Returns the jobId."""
+        data = await self._get(
+            "createOtaJobApi",
+            f"/create-ota-job?deviceThingName={thing_name}&objectKey={object_key}",
+        )
+        if isinstance(data, dict):
+            return data.get("jobId")
+        return None
+
+    async def get_ota_job_summary(
+        self, thing_name: str, job_id: str
+    ) -> dict | None:
+        """Poll OTA job status. Returns {status, statusDetails}."""
+        data = await self._get(
+            "createOtaJobApi",
+            f"/get-ota-job-summary?deviceThingName={thing_name}&jobId={job_id}",
+        )
+        return data if isinstance(data, dict) else None
+
     async def get_clean_history(
         self, thing_name: str, page: int = 0, size: int = 10
     ) -> list[dict]:
