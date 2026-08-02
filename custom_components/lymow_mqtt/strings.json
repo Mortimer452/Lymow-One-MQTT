@@ -18,7 +18,7 @@
       },
       "oauth": {
         "title": "Google or Apple account",
-        "description": "**1.** [Click here to sign in]({oauth_url}) and hit F12 to open your browser's dev tools. After signing in, your browser will fail to redirect to `myapp://callback/...` — that's expected.\n\n**2.** Copy the URL from your browser's address bar  or Network dev tools tab (it should start with `myapp://callback/?code=...`) and paste it below.\n\n**3.**",
+        "description": "Sign-in cannot complete in the browser — the final redirect goes to `myapp://callback/`, a mobile-app scheme your browser cannot open. The code is in a redirect **header**, not the address bar (the address bar will look unchanged).\n\n**1.** Press **F12** → **Network** tab, and tick **Preserve log** *before* signing in.\n\n**2.** [Click here to sign in]({oauth_url}) and complete Google/Apple login.\n\n**3.** Filter the Network list for `idpresponse`, click that row, and open **Headers → Response Headers**. Copy the `location:` value — it starts with `myapp://callback/?code=`.\n\n**4.** Paste it below. The code is single-use and expires in ~5 minutes, so paste it right away; if it fails, repeat the sign-in for a fresh one.",
         "data": {"oauth_code": "Pasted callback URL or code"}
       },
       "pick_device": {

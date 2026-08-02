@@ -53,8 +53,16 @@ class LymowREST:
                 return text
 
     async def get_device_list(self) -> list[dict]:
-        """List devices bound to this account."""
-        data = await self._get("deviceBindingApi", "/device-list-query?p=validation")
+        """List devices bound to this account.
+
+        NOTE: ?p=validation is a session keep-alive that always returns [];
+        listing bound devices requires ?p=devices plus the Identity Pool id.
+        """
+        await self._auth.ensure_valid()  # populates identity_id
+        data = await self._get(
+            "deviceBindingApi",
+            f"/device-list-query?p=devices&identityId={self._auth.identity_id}",
+        )
         if isinstance(data, list):
             return data
         if isinstance(data, dict):
