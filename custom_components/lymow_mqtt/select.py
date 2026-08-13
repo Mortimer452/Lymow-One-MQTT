@@ -31,8 +31,9 @@ class LymowGuardActionSelect(LymowEntity, SelectEntity):
     _attr_extra_state_attributes = {
         "description": (
             "What the guard does when it trips. Dock drives the mower home "
-            "along its channel; Pause stops it in place — faster, but it "
-            "stays parked mid-lawn until you intervene."
+            "along its channel. Pause stops it in place and automatically "
+            "resumes mowing once accuracy recovers and stays good for the "
+            "hold time; a pause you trigger yourself never auto-resumes."
         )
     }
 

@@ -13,7 +13,7 @@ Key design points under test (arch.md §5d, capture_20260813_150340):
 """
 from __future__ import annotations
 
-from lymow_mqtt.accuracy_guard import AccuracyGuard, GuardConfig
+from lymow_mqtt.accuracy_guard import ACTION_RESUME, AccuracyGuard, GuardConfig
 from lymow_mqtt.const import (
     LOC_NODE_INITIALIZING,
     LOC_NODE_RUNNING,
@@ -162,6 +162,96 @@ class TestLifecycle:
         g = self._tripped_guard()
         _mow(g, 500.0, work_status=WORK_STATUS_WAITING)
         assert g.armed is False
+
+    def test_guard_dock_does_not_auto_resume(self):
+        """Auto-resume is a pause-action behavior only. After a dock trip
+        the mower transits DOCKING (frozen) then CHARGING (reset) — good
+        signal during the return must never emit a resume."""
+        g = self._tripped_guard()  # action="dock"
+        t = 100.0 + HOLD + 30
+        for i in range(20):
+            assert _mow(g, t + i * 30, work_status=WORK_STATUS_DOCKING, h_acc=0.05) is None
+
+
+class TestAutoResume:
+    """Pause action: the guard keeps evaluating while ITS OWN pause is in
+    effect and resumes mowing once accuracy recovers, sustained for the
+    same hold time (debounce against marginal-signal cycling)."""
+
+    PAUSE_CFG = GuardConfig(enabled=True, threshold_m=1.0, hold_s=HOLD, action="pause")
+
+    def _guard_paused(self):
+        """Arm, degrade, trip the pause at t=281."""
+        g = AccuracyGuard()
+        _mow(g, 0.0, h_acc=0.015, cfg=self.PAUSE_CFG)
+        _mow(g, 100.0, h_acc=2.5, cfg=self.PAUSE_CFG)
+        assert _mow(g, 100.0 + HOLD + 1, h_acc=2.5, cfg=self.PAUSE_CFG) == "pause"
+        return g
+
+    def _paused(self, g, now, h_acc, loc_node=LOC_NODE_RUNNING):
+        return _mow(g, now, work_status=WORK_STATUS_PAUSE, h_acc=h_acc,
+                    loc_node=loc_node, cfg=self.PAUSE_CFG)
+
+    def test_sustained_recovery_resumes(self):
+        g = self._guard_paused()
+        assert self._paused(g, 300.0, h_acc=0.05) is None          # recovery starts
+        assert self._paused(g, 300.0 + HOLD - 1, h_acc=0.05) is None
+        assert self._paused(g, 300.0 + HOLD + 1, h_acc=0.05) == ACTION_RESUME
+
+    def test_single_good_reading_does_not_resume(self):
+        g = self._guard_paused()
+        assert self._paused(g, 300.0, h_acc=0.05) is None
+        assert self._paused(g, 330.0, h_acc=2.5) is None           # still bad — timer resets
+        assert self._paused(g, 330.0 + HOLD + 1, h_acc=2.5) is None
+        # Fresh sustained recovery needed from here
+        assert self._paused(g, 700.0, h_acc=0.05) is None
+        assert self._paused(g, 700.0 + HOLD + 1, h_acc=0.05) == ACTION_RESUME
+
+    def test_missing_accuracy_does_not_resume(self):
+        """No data is not recovery — never resume blind."""
+        g = self._guard_paused()
+        for i in range(20):
+            assert self._paused(g, 300.0 + i * 30, h_acc=None) is None
+
+    def test_loc_node_not_running_does_not_resume(self):
+        g = self._guard_paused()
+        for i in range(20):
+            assert self._paused(g, 300.0 + i * 30, h_acc=0.05,
+                                loc_node=LOC_NODE_INITIALIZING) is None
+
+    def test_guard_can_trip_again_after_auto_resume(self):
+        """Full cycle: pause → recover → resume → degrade again → pause."""
+        g = self._guard_paused()
+        self._paused(g, 300.0, h_acc=0.05)
+        assert self._paused(g, 300.0 + HOLD + 1, h_acc=0.05) == ACTION_RESUME
+        # Back to mowing; signal degrades again — fresh hold, fresh pause
+        t = 600.0
+        assert _mow(g, t, h_acc=2.5, cfg=self.PAUSE_CFG) is None
+        assert _mow(g, t + HOLD + 1, h_acc=2.5, cfg=self.PAUSE_CFG) == "pause"
+
+    def test_user_pause_never_auto_resumes(self):
+        """A pause the guard did NOT initiate is the user's decision —
+        pristine signal for any length of time must not resume it."""
+        g = AccuracyGuard()
+        _mow(g, 0.0, h_acc=0.015, cfg=self.PAUSE_CFG)  # armed, healthy
+        for i in range(40):
+            assert self._paused(g, 100.0 + i * 30, h_acc=0.05) is None
+
+    def test_manual_resume_restores_protection(self):
+        """User resumes while the guard awaits recovery: cancel the
+        pending auto-resume and unlatch so the guard can protect again."""
+        g = self._guard_paused()
+        self._paused(g, 300.0, h_acc=0.05)  # recovery underway
+        # User hits resume — mowing again, still degraded
+        assert _mow(g, 400.0, h_acc=2.5, cfg=self.PAUSE_CFG) is None  # fresh hold
+        assert _mow(g, 400.0 + HOLD + 1, h_acc=2.5, cfg=self.PAUSE_CFG) == "pause"
+
+    def test_task_end_while_paused_resets(self):
+        g = self._guard_paused()
+        _mow(g, 400.0, work_status=WORK_STATUS_CHARGING, h_acc=0.05, cfg=self.PAUSE_CFG)
+        assert g.armed is False
+        # Good signal later must not emit a stray resume
+        assert self._paused(g, 500.0, h_acc=0.05) is None
 
     def test_pause_freezes_evaluation_but_keeps_arm(self):
         """User-paused mid-task: no degradation accrues while parked, but

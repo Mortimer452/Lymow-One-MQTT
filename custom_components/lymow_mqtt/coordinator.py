@@ -24,7 +24,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from . import protocol, signal_grid as _sg, state, state_matrix, userctrl
-from .accuracy_guard import ACTION_DOCK, AccuracyGuard, GuardConfig
+from .accuracy_guard import ACTION_DOCK, ACTION_RESUME, AccuracyGuard, GuardConfig
 from .auth import CognitoAuth
 from .const import (
     API_ENDPOINTS,
@@ -386,6 +386,33 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 h_acc,
             )
         if action is None:
+            return
+
+        if action == ACTION_RESUME:
+            # Guard-initiated pause recovered: resume the task. Same
+            # notification_id replaces the pause notification in the UI.
+            acc_str = f"{h_acc:.2f} m" if h_acc is not None else "unknown"
+            _LOGGER.info(
+                "Accuracy guard: RTK recovered for %s (h_acc=%s m) — resuming",
+                self.thing_name,
+                h_acc,
+            )
+            self.hass.bus.async_fire(
+                f"{DOMAIN}_accuracy_guard_triggered",
+                {
+                    "thing_name": self.thing_name,
+                    "action": action,
+                    "horizontal_accuracy": h_acc,
+                    "loc_node_status": loc_node,
+                },
+            )
+            persistent_notification.async_create(
+                self.hass,
+                f"RTK accuracy recovered (accuracy {acc_str}). Resuming mowing.",
+                title="Lymow accuracy guard",
+                notification_id=f"{DOMAIN}_accuracy_guard_{self.thing_name}",
+            )
+            self.hass.async_create_task(self._guard_dispatch("start_mowing"))
             return
 
         _LOGGER.warning(

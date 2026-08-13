@@ -30,10 +30,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .const import ACTIVE_TASK_STATUSES, LOC_NODE_RUNNING, WORK_STATUS_MOWING
+from .const import (
+    ACTIVE_TASK_STATUSES,
+    LOC_NODE_RUNNING,
+    WORK_STATUS_MOWING,
+    WORK_STATUS_PAUSE,
+)
 
 ACTION_DOCK = "dock"
 ACTION_PAUSE = "pause"
+# Emitted by the guard itself when a guard-initiated pause recovers —
+# never a configurable action.
+ACTION_RESUME = "resume"
 
 
 @dataclass(frozen=True)
@@ -53,6 +61,11 @@ class AccuracyGuard:
         self._armed = False
         self._degraded_since: float | None = None
         self._latched = False
+        # Auto-resume bookkeeping — only meaningful after a PAUSE trip.
+        # _awaiting_recovery distinguishes "the guard paused the mower"
+        # from a user-initiated pause, which must never auto-resume.
+        self._awaiting_recovery = False
+        self._recovered_since: float | None = None
 
     @property
     def armed(self) -> bool:
@@ -90,7 +103,36 @@ class AccuracyGuard:
             # navigating on this data. Freeze the hold timer but keep the
             # arm and latch — resuming re-enters evaluation immediately.
             self._degraded_since = None
+            if work_status == WORK_STATUS_PAUSE and self._awaiting_recovery:
+                # OUR pause: keep watching the signal and resume once it
+                # recovers, sustained for the hold time (debounce against
+                # marginal-signal pause/resume cycling). Missing data or a
+                # non-RUNNING node is not recovery — never resume blind.
+                recovered = loc_node_status == LOC_NODE_RUNNING and (
+                    h_acc is not None and h_acc <= config.threshold_m
+                )
+                if not recovered:
+                    self._recovered_since = None
+                    return None
+                if self._recovered_since is None:
+                    self._recovered_since = now
+                    return None
+                if now - self._recovered_since >= config.hold_s:
+                    self._awaiting_recovery = False
+                    self._recovered_since = None
+                    self._latched = False  # protection re-arms post-resume
+                    return ACTION_RESUME
+                return None
+            self._recovered_since = None
             return None
+
+        if self._awaiting_recovery:
+            # Mowing again while we awaited recovery: either the user
+            # resumed manually or our pause never landed. Cancel the
+            # pending auto-resume and unlatch so protection continues.
+            self._awaiting_recovery = False
+            self._recovered_since = None
+            self._latched = False
 
         if not self._armed:
             if loc_node_status != LOC_NODE_RUNNING:
@@ -114,6 +156,8 @@ class AccuracyGuard:
         if now - self._degraded_since >= config.hold_s:
             self._latched = True
             self._degraded_since = None
+            if config.action == ACTION_PAUSE:
+                self._awaiting_recovery = True
             return config.action
         return None
 
@@ -121,3 +165,5 @@ class AccuracyGuard:
         self._armed = False
         self._degraded_since = None
         self._latched = False
+        self._awaiting_recovery = False
+        self._recovered_since = None
