@@ -88,6 +88,16 @@ class LymowAccuracyGuardSwitch(LymowEntity, SwitchEntity):
     _attr_translation_key = "accuracy_guard"
     _attr_entity_category = EntityCategory.CONFIG
     _attr_icon = "mdi:satellite-uplink"
+    # HA has no native per-entity help text; a static attribute shows in
+    # the more-info dialog's Attributes section.
+    _attr_extra_state_attributes = {
+        "description": (
+            "Watches RTK accuracy while mowing and docks or pauses the "
+            "mower when accuracy stays degraded past the hold time — "
+            "protection against a failing RTK base station. Arms itself "
+            "once localization reports Running after each task start."
+        )
+    }
 
     def __init__(self, coordinator: LymowCoordinator) -> None:
         super().__init__(coordinator, "accuracy_guard")

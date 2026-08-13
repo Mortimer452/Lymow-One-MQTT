@@ -26,6 +26,15 @@ class LymowGuardActionSelect(LymowEntity, SelectEntity):
     _attr_entity_category = EntityCategory.CONFIG
     _attr_icon = "mdi:home-alert"
     _attr_options = [ACTION_DOCK, ACTION_PAUSE]
+    # HA has no native per-entity help text; a static attribute shows in
+    # the more-info dialog's Attributes section.
+    _attr_extra_state_attributes = {
+        "description": (
+            "What the guard does when it trips. Dock drives the mower home "
+            "along its channel; Pause stops it in place — faster, but it "
+            "stays parked mid-lawn until you intervene."
+        )
+    }
 
     def __init__(self, coordinator: LymowCoordinator) -> None:
         super().__init__(coordinator, "guard_action")

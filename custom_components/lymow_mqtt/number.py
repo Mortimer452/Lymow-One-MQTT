@@ -171,11 +171,20 @@ class LymowGuardThresholdNumber(_LymowGuardNumber):
     # comparison against horizontalAccuracy stay in METERS; this entity
     # converts at the boundary (×100 / ÷100).
     _attr_device_class = NumberDeviceClass.DISTANCE
-    _attr_native_min_value = 10
+    _attr_native_min_value = 1
     _attr_native_max_value = 1000
     _attr_native_step = 1
     _attr_native_unit_of_measurement = UnitOfLength.CENTIMETERS
     _attr_mode = NumberMode.BOX
+    # HA has no native per-entity help text; a static attribute shows in
+    # the more-info dialog's Attributes section (same pattern below).
+    _attr_extra_state_attributes = {
+        "description": (
+            "Horizontal accuracy above this counts as degraded. Healthy "
+            "RTK mowing typically reads under 5 cm (2 in); a failing base "
+            "station reads meters or worse."
+        )
+    }
 
     def __init__(self, coordinator: LymowCoordinator) -> None:
         super().__init__(coordinator, "guard_threshold")
@@ -205,6 +214,13 @@ class LymowGuardHoldNumber(_LymowGuardNumber):
     _attr_native_step = 1
     _attr_native_unit_of_measurement = UnitOfTime.MINUTES
     _attr_mode = NumberMode.SLIDER
+    _attr_extra_state_attributes = {
+        "description": (
+            "Accuracy must stay degraded this long before the guard acts. "
+            "Brief dips are normal RTK jitter; broadcasts arrive every "
+            "30–90 s, so values under 2 min react to single readings."
+        )
+    }
 
     def __init__(self, coordinator: LymowCoordinator) -> None:
         super().__init__(coordinator, "guard_hold_time")
