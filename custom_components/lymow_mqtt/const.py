@@ -167,6 +167,42 @@ RTK_STATUS_LABELS = {
 }
 
 # ─────────────────────────────────────────────────────────────
+# LocNodeStatus enum — PbLocalizationInfo.locNodeStatus
+# (arch.md §5d, decompiled.js:388875-388922). Lifecycle of the onboard
+# localization ALGORITHM NODE — not a signal-quality metric. Accuracy /
+# quality readings are meaningless until the node reaches RUNNING
+# (dock-sleep wake-up reads ~28 m h_acc during WAITING/INITIALIZING).
+# ─────────────────────────────────────────────────────────────
+LOC_NODE_NONE         = 0  # ALGO_NODE_NONE
+LOC_NODE_WAITING      = 1  # ALGO_NODE_WAITING
+LOC_NODE_INITIALIZING = 2  # ALGO_NODE_INITIALIZING
+LOC_NODE_RUNNING      = 3  # ALGO_NODE_RUNNING
+
+LOC_NODE_LABELS = {
+    LOC_NODE_NONE:         "None",
+    LOC_NODE_WAITING:      "Waiting",
+    LOC_NODE_INITIALIZING: "Initializing",
+    LOC_NODE_RUNNING:      "Running",
+}
+
+# ─────────────────────────────────────────────────────────────
+# Accuracy guard — config-entry option keys + defaults.
+# Consumed by accuracy_guard.py via coordinator.guard_config; written by
+# the guard switch/number/select config entities. Values are HA-side only
+# (no firmware traffic). Action strings must match accuracy_guard.py's
+# ACTION_DOCK / ACTION_PAUSE (const.py can't import them — import cycle).
+# ─────────────────────────────────────────────────────────────
+CONF_GUARD_ENABLED   = "guard_enabled"
+CONF_GUARD_THRESHOLD = "guard_threshold_m"
+CONF_GUARD_HOLD_MIN  = "guard_hold_min"
+CONF_GUARD_ACTION    = "guard_action"
+
+GUARD_DEFAULT_ENABLED     = False  # opt-in: it commands the mower autonomously
+GUARD_DEFAULT_THRESHOLD_M = 1.0
+GUARD_DEFAULT_HOLD_MIN    = 3.0
+GUARD_DEFAULT_ACTION      = "dock"
+
+# ─────────────────────────────────────────────────────────────
 # cleanMode STRING values
 # ─────────────────────────────────────────────────────────────
 CLEAN_MODE_ZIGZAG          = "ZIGZAG_MODE"

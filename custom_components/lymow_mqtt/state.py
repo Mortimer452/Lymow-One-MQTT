@@ -7,7 +7,7 @@ just provides the merge and derivation logic.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from math import cos, radians
+from math import cos, hypot, radians
 from typing import Any
 
 from .const import ACTIVE_TASK_STATUSES
@@ -81,6 +81,49 @@ def point_in_polygon(x: float, y: float, polygon: list[tuple[float, float]]) -> 
                 inside = not inside
         j = i
     return inside
+
+
+# How far outside a zone/channel polygon a pose may sit and still be
+# attributed to it. The mower hugs boundaries on perimeter laps (and channel
+# corridors are barely wider than the mower), so honest RTK jitter routinely
+# lands the pose centimeters outside the polygon — without this rescue,
+# current_zone flickers to unknown and active_cut_config drops the per-zone
+# tier. 0.5 m covers centimeter-scale jitter with a healthy fix while staying
+# far below the meter-scale drift of a degraded fix, which must NOT be
+# attributed (the "did it escape the yard" signal stays honest).
+ZONE_EDGE_BUFFER_M = 0.5
+
+
+def point_to_polygon_edge_distance(
+    x: float, y: float, polygon: list[tuple[float, float]]
+) -> float:
+    """Unsigned distance from (x, y) to the nearest edge of a closed polygon.
+
+    Companion to ``point_in_polygon`` for the edge-buffer rescue: callers
+    invoke it after a strict containment miss to ask "how far outside?".
+    Distance is unsigned (a point inside the polygon gets its distance to
+    the boundary). Returns ``inf`` for degenerate polygons (< 2 points).
+    """
+    n = len(polygon)
+    if n < 2:
+        return float("inf")
+    best = float("inf")
+    j = n - 1
+    for i in range(n):
+        x1, y1 = polygon[j]
+        x2, y2 = polygon[i]
+        dx, dy = x2 - x1, y2 - y1
+        seg_len_sq = dx * dx + dy * dy
+        if seg_len_sq == 0:
+            d = hypot(x - x1, y - y1)
+        else:
+            t = ((x - x1) * dx + (y - y1) * dy) / seg_len_sq
+            t = max(0.0, min(1.0, t))
+            d = hypot(x - (x1 + t * dx), y - (y1 + t * dy))
+        if d < best:
+            best = d
+        j = i
+    return best
 
 
 def is_real_zone_catalog(new_catalog) -> bool:
@@ -214,6 +257,39 @@ def merge_pboutput(state_dict: dict[str, Any], msg) -> None:
 # The leading underscore signals "internal derived state, not for export".
 _CURRENT_ZONE_HASH_KEY = "_current_zone_hash_id"
 
+# Companion cache key: HOW the cached zone matched. ("strict", 0.0) for a
+# containment hit, ("buffered", distance_m) for an edge-buffer rescue, None
+# for no match. derive_current_zone needs the distinction (and the distance)
+# so buffered zone matches compete with channels by proximity instead of
+# short-circuiting past the channel walk.
+_CURRENT_ZONE_MATCH_KEY = "_current_zone_match"
+
+
+def _walk_zone_match(pose, catalog):
+    """Strict-then-buffered zone walk shared by the cache writer and the
+    no-cache fallback path (which must stay behaviorally identical).
+
+    Returns ``(zone, ("strict", 0.0))`` on containment,
+    ``(zone, ("buffered", d))`` when the nearest zone edge is within
+    ``ZONE_EDGE_BUFFER_M``, else ``(None, None)``.
+    """
+    # In the (theoretical) case where polygons overlap, prefer the in-task
+    # zone. Zones don't overlap in practice but the sort is cheap.
+    zones = sorted(catalog.zones, key=lambda z: (z.mow_order == 0, z.mow_order))
+    for zone in zones:
+        if zone.polygon_points and point_in_polygon(pose.x, pose.y, zone.polygon_points):
+            return zone, ("strict", 0.0)
+    best, best_d = None, float("inf")
+    for zone in zones:
+        if not zone.polygon_points:
+            continue
+        d = point_to_polygon_edge_distance(pose.x, pose.y, zone.polygon_points)
+        if d < best_d:
+            best, best_d = zone, d
+    if best is not None and best_d <= ZONE_EDGE_BUFFER_M:
+        return best, ("buffered", best_d)
+    return None, None
+
 
 def compute_current_zone_cache(state_dict: dict[str, Any]) -> str | None:
     """Run the pose-in-polygon walk once and stash the result in state.
@@ -226,27 +302,23 @@ def compute_current_zone_cache(state_dict: dict[str, Any]) -> str | None:
     pboutput and 15+ per refresh cycle.
 
     Storage shape: ``state_dict[_CURRENT_ZONE_HASH_KEY]`` is set to the
-    hash_id of the containing zone, or None if pose is outside every
-    polygon. Key absent means "cache not populated yet" — consumers fall
-    back to a live walk in that case (e.g. unit tests that bypass the
-    coordinator).
+    hash_id of the matched zone (strict containment, or edge-buffer rescue
+    within ZONE_EDGE_BUFFER_M), or None if neither matches.
+    ``state_dict[_CURRENT_ZONE_MATCH_KEY]`` records how it matched — see
+    its comment. Key absent means "cache not populated yet" — consumers
+    fall back to a live walk in that case (e.g. unit tests that bypass
+    the coordinator).
     """
     pose = state_dict.get("pose")
     catalog = state_dict.get("zone_catalog")
     if pose is None or catalog is None:
         state_dict[_CURRENT_ZONE_HASH_KEY] = None
+        state_dict[_CURRENT_ZONE_MATCH_KEY] = None
         return None
-    # Mirror derive_current_zone's sort: in the (theoretical) case where
-    # polygons overlap, prefer the in-task zone so the cache result is
-    # consistent with what derive_current_zone would have returned on its
-    # own. Zones don't overlap in practice but the sort is cheap.
-    zones = sorted(catalog.zones, key=lambda z: (z.mow_order == 0, z.mow_order))
-    for zone in zones:
-        if zone.polygon_points and point_in_polygon(pose.x, pose.y, zone.polygon_points):
-            state_dict[_CURRENT_ZONE_HASH_KEY] = zone.hash_id
-            return zone.hash_id
-    state_dict[_CURRENT_ZONE_HASH_KEY] = None
-    return None
+    zone, match = _walk_zone_match(pose, catalog)
+    state_dict[_CURRENT_ZONE_HASH_KEY] = zone.hash_id if zone else None
+    state_dict[_CURRENT_ZONE_MATCH_KEY] = match
+    return zone.hash_id if zone else None
 
 
 def zone_at_pose(state_dict: dict[str, Any]):
@@ -267,16 +339,13 @@ def zone_at_pose(state_dict: dict[str, Any]):
         if cached is None:
             return None
         return catalog.zones_by_hashid.get(cached)
-    # Cache not populated — fall back to a live walk. Same sort as the
+    # Cache not populated — fall back to a live walk. Same walk as the
     # cache writer so the result is consistent across both paths.
     pose = state_dict.get("pose")
     if pose is None:
         return None
-    zones = sorted(catalog.zones, key=lambda z: (z.mow_order == 0, z.mow_order))
-    for zone in zones:
-        if zone.polygon_points and point_in_polygon(pose.x, pose.y, zone.polygon_points):
-            return zone
-    return None
+    zone, _match = _walk_zone_match(pose, catalog)
+    return zone
 
 
 def is_task_active(state_dict: dict[str, Any]) -> bool:
@@ -323,6 +392,8 @@ def derive_current_zone(state_dict: dict[str, Any]) -> str | None:
     Returns:
         Zone name if the mower is inside a zone polygon
         Channel descriptor (e.g. "Pool → Front yard" or "→ dock") if in a corridor
+        Either of the above if the pose is within ZONE_EDGE_BUFFER_M of the
+            polygon (RTK-jitter rescue; nearest geometry wins)
         None if idle, or in transit, or zone catalog unavailable
 
     Per arch.md §12, this is what the official app does. Pose is in local
@@ -345,22 +416,57 @@ def derive_current_zone(state_dict: dict[str, Any]) -> str | None:
     if work_status not in ACTIVE_TASK_STATUSES:
         return None
 
-    zone = zone_at_pose(state_dict)
+    # Priority: strict zone → strict channel → nearest buffered geometry
+    # (zone or channel) within ZONE_EDGE_BUFFER_M → None. A buffered zone
+    # match must NOT short-circuit past the channel walk — at a channel
+    # mouth the pose can sit just outside both, and whichever boundary is
+    # physically closer should win.
+    if _CURRENT_ZONE_HASH_KEY in state_dict:
+        cached = state_dict[_CURRENT_ZONE_HASH_KEY]
+        zone = catalog.zones_by_hashid.get(cached) if cached else None
+        zone_match = state_dict.get(_CURRENT_ZONE_MATCH_KEY)
+        # Cache written before the match key existed (or by a test fixture
+        # that only sets the hash): treat as strict, the pre-buffer semantics.
+        if zone is not None and zone_match is None:
+            zone_match = ("strict", 0.0)
+    else:
+        zone, zone_match = _walk_zone_match(pose, catalog)
+
+    if zone is not None and zone_match[0] == "strict":
+        return zone.name
+
+    # Strict channel walk — distinct geometry from zones; not cached.
+    for ch in catalog.channels:
+        if ch.polygon_points and point_in_polygon(pose.x, pose.y, ch.polygon_points):
+            return _channel_descriptor(ch, catalog)
+
+    # Buffered tier: the rescued zone (if any) competes with the nearest
+    # channel edge; ties go to the zone.
+    zone_d = zone_match[1] if zone is not None else float("inf")
+    best_ch, best_ch_d = None, float("inf")
+    for ch in catalog.channels:
+        if not ch.polygon_points:
+            continue
+        d = point_to_polygon_edge_distance(pose.x, pose.y, ch.polygon_points)
+        if d < best_ch_d:
+            best_ch, best_ch_d = ch, d
+    if best_ch is not None and best_ch_d <= ZONE_EDGE_BUFFER_M and best_ch_d < zone_d:
+        return _channel_descriptor(best_ch, catalog)
     if zone is not None:
         return zone.name
 
-    # Channel walk — distinct geometry from zones; not cached.
-    for ch in catalog.channels:
-        if ch.polygon_points and point_in_polygon(pose.x, pose.y, ch.polygon_points):
-            if ch.is_docking_channel:
-                return "→ dock"
-            zone1_name = catalog.zones_by_hashid.get(ch.zone1)
-            zone2_name = catalog.zones_by_hashid.get(ch.zone2)
-            n1 = zone1_name.name if zone1_name else ch.zone1
-            n2 = zone2_name.name if zone2_name else ch.zone2
-            return f"{n1} → {n2}"
-
     return None  # mower is somewhere between defined polygons (rare)
+
+
+def _channel_descriptor(ch, catalog) -> str:
+    """Human-readable descriptor for a channel: "→ dock" or "Pool → Front"."""
+    if ch.is_docking_channel:
+        return "→ dock"
+    zone1 = catalog.zones_by_hashid.get(ch.zone1)
+    zone2 = catalog.zones_by_hashid.get(ch.zone2)
+    n1 = zone1.name if zone1 else ch.zone1
+    n2 = zone2.name if zone2 else ch.zone2
+    return f"{n1} → {n2}"
 
 
 def _has_field(msg, name: str) -> bool:

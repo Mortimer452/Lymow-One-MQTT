@@ -27,6 +27,7 @@ PLATFORMS: list[Platform] = [
     Platform.DEVICE_TRACKER,
     Platform.SWITCH,
     Platform.NUMBER,
+    Platform.SELECT,
     Platform.UPDATE,
 ]
 
@@ -60,7 +61,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         raise ConfigEntryAuthFailed("Token refresh failed") from e
 
     rest = LymowREST(region, auth, session)
-    coordinator = LymowCoordinator(hass, auth, rest, thing_name, region)
+    coordinator = LymowCoordinator(hass, auth, rest, thing_name, region, entry=entry)
     await coordinator.async_setup()
 
     hass.data.setdefault(DOMAIN, {})

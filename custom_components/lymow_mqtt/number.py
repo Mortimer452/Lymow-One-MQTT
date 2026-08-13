@@ -29,12 +29,17 @@ from homeassistant.components.number import (
     NumberMode,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, EntityCategory
+from homeassistant.const import (
+    PERCENTAGE,
+    EntityCategory,
+    UnitOfLength,
+    UnitOfTime,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .const import CONF_GUARD_HOLD_MIN, CONF_GUARD_THRESHOLD, DOMAIN
 from .coordinator import LymowCoordinator
 from .entity_base import LymowEntity
 
@@ -136,6 +141,98 @@ class LymowResumeThresholdNumber(_LymowRrThresholdNumber):
         await self.coordinator.cmd_set_resume_threshold(new)
 
 
+class _LymowGuardNumber(LymowEntity, NumberEntity):
+    """Shared base for accuracy-guard option numbers.
+
+    Unlike the rrConfig numbers above, these are HA-side settings stored
+    in config-entry options — no firmware round-trip, no availability
+    gate (editable even while the mower is offline).
+    """
+
+    _attr_entity_category = EntityCategory.CONFIG
+
+    @property
+    def available(self) -> bool:
+        return True
+
+
+class LymowGuardThresholdNumber(_LymowGuardNumber):
+    """Accuracy-guard trip threshold — meters of horizontalAccuracy.
+
+    Default 1.0 m: field history shows healthy mowing at p90 < 1.0 m and
+    real base-station failures at meter-to-hundreds-of-meters scale.
+    """
+
+    _attr_translation_key = "guard_threshold"
+    _attr_icon = "mdi:crosshairs-gps"
+    # DISTANCE device_class + built-in unit conversion. Native unit is
+    # CENTIMETERS (imperial users see/enter inches) — cm/in is the natural
+    # scale for an RTK jitter threshold. The stored option and the guard's
+    # comparison against horizontalAccuracy stay in METERS; this entity
+    # converts at the boundary (×100 / ÷100).
+    _attr_device_class = NumberDeviceClass.DISTANCE
+    _attr_native_min_value = 1
+    _attr_native_max_value = 1000
+    _attr_native_step = 1
+    _attr_native_unit_of_measurement = UnitOfLength.CENTIMETERS
+    _attr_mode = NumberMode.BOX
+    # HA has no native per-entity help text; a static attribute shows in
+    # the more-info dialog's Attributes section (same pattern below).
+    _attr_extra_state_attributes = {
+        "description": (
+            "Horizontal accuracy above this counts as degraded. Healthy "
+            "RTK mowing typically reads under 5 cm (2 in); a failing base "
+            "station reads meters or worse."
+        )
+    }
+
+    def __init__(self, coordinator: LymowCoordinator) -> None:
+        super().__init__(coordinator, "guard_threshold")
+
+    @property
+    def native_value(self) -> float:
+        return self.coordinator.guard_config.threshold_m * 100.0
+
+    async def async_set_native_value(self, value: float) -> None:
+        # value arrives in native cm; store meters. round(…, 4) keeps
+        # imperial entries exact (36 in = 91.44 cm -> 0.9144 m).
+        self.coordinator.set_guard_option(CONF_GUARD_THRESHOLD, round(value / 100.0, 4))
+
+
+class LymowGuardHoldNumber(_LymowGuardNumber):
+    """How long degradation must persist before the guard acts.
+
+    Default 3 min: long enough to ride out blip-level RTK jitter
+    (observed: sub-minute dips), short enough to bound how far a blind
+    mower can wander.
+    """
+
+    _attr_translation_key = "guard_hold_time"
+    _attr_icon = "mdi:timer-sand"
+    _attr_native_min_value = 1
+    _attr_native_max_value = 15
+    _attr_native_step = 1
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+    _attr_mode = NumberMode.SLIDER
+    _attr_extra_state_attributes = {
+        "description": (
+            "Accuracy must stay degraded this long before the guard acts. "
+            "Brief dips are normal RTK jitter; broadcasts arrive every "
+            "30–90 s, so values under 2 min react to single readings."
+        )
+    }
+
+    def __init__(self, coordinator: LymowCoordinator) -> None:
+        super().__init__(coordinator, "guard_hold_time")
+
+    @property
+    def native_value(self) -> float:
+        return self.coordinator.guard_config.hold_s / 60.0
+
+    async def async_set_native_value(self, value: float) -> None:
+        self.coordinator.set_guard_option(CONF_GUARD_HOLD_MIN, int(round(value)))
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
@@ -143,4 +240,6 @@ async def async_setup_entry(
     async_add_entities([
         LymowRechargeThresholdNumber(coord),
         LymowResumeThresholdNumber(coord),
+        LymowGuardThresholdNumber(coord),
+        LymowGuardHoldNumber(coord),
     ])

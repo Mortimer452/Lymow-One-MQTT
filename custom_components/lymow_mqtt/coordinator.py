@@ -12,19 +12,32 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from homeassistant.components import persistent_notification
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from . import protocol, signal_grid as _sg, state, state_matrix, userctrl
+from .accuracy_guard import ACTION_DOCK, ACTION_RESUME, AccuracyGuard, GuardConfig
 from .auth import CognitoAuth
 from .const import (
     API_ENDPOINTS,
+    CONF_GUARD_ACTION,
+    CONF_GUARD_ENABLED,
+    CONF_GUARD_HOLD_MIN,
+    CONF_GUARD_THRESHOLD,
     DOMAIN,
+    GUARD_DEFAULT_ACTION,
+    GUARD_DEFAULT_ENABLED,
+    GUARD_DEFAULT_HOLD_MIN,
+    GUARD_DEFAULT_THRESHOLD_M,
+    LOC_NODE_LABELS,
     USER_CTRL_CLEAN,
     USER_CTRL_DOCK,
     USER_CTRL_FORCE_REINIT,
@@ -63,6 +76,7 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         rest: LymowREST,
         thing_name: str,
         region: str,
+        entry: ConfigEntry | None = None,
     ) -> None:
         super().__init__(
             hass,
@@ -75,6 +89,11 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.thing_name = thing_name
         self.region = region
         self.host = API_ENDPOINTS[region]["iotDomain"]
+
+        # Config entry backing the guard options (None only in tests).
+        self._config_entry = entry
+        # RTK accuracy guard — pure state machine, fed per broadcast.
+        self.accuracy_guard = AccuracyGuard()
 
         # State dict — single source of truth
         self._state: dict[str, Any] = {}
@@ -301,8 +320,139 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # wait() can't be lost.
         self._state_event.set()
 
+        # RTK accuracy guard — evaluate on the merged state so sticky
+        # fields (localizationInfo) are current even on partial broadcasts.
+        self._evaluate_accuracy_guard()
+
         # Notify HA entities
         self.async_set_updated_data(self._state)
+
+    # ── Accuracy guard ──────────────────────────────────────────
+
+    @property
+    def guard_config(self) -> GuardConfig:
+        """Live guard knobs from config-entry options (defaults if unset)."""
+        opts = self._config_entry.options if self._config_entry else {}
+        return GuardConfig(
+            enabled=bool(opts.get(CONF_GUARD_ENABLED, GUARD_DEFAULT_ENABLED)),
+            threshold_m=float(
+                opts.get(CONF_GUARD_THRESHOLD, GUARD_DEFAULT_THRESHOLD_M)
+            ),
+            hold_s=float(opts.get(CONF_GUARD_HOLD_MIN, GUARD_DEFAULT_HOLD_MIN)) * 60.0,
+            action=opts.get(CONF_GUARD_ACTION, GUARD_DEFAULT_ACTION),
+        )
+
+    def set_guard_option(self, key: str, value: Any) -> None:
+        """Persist one guard option on the config entry; refresh entities.
+
+        Options apply on the next broadcast — no reload needed, because
+        guard_config re-reads entry.options on every evaluation.
+        """
+        if self._config_entry is None:
+            raise HomeAssistantError("No config entry bound; cannot save option")
+        self.hass.config_entries.async_update_entry(
+            self._config_entry,
+            options={**self._config_entry.options, key: value},
+        )
+        self.async_update_listeners()
+
+    def _evaluate_accuracy_guard(self) -> None:
+        """Feed the merged broadcast to the guard; dispatch if it trips."""
+        ri = self._state.get("robotInfo")
+        if ri is None:
+            return
+        li = self._state.get("localizationInfo")
+        h_acc = (
+            li.horizontalAccuracy
+            if li is not None and state._has_field(li, "horizontalAccuracy")
+            else None
+        )
+        loc_node = li.locNodeStatus if li is not None else None
+
+        was_armed = self.accuracy_guard.armed
+        action = self.accuracy_guard.evaluate(
+            now=time.monotonic(),
+            work_status=ri.workStatus,
+            loc_node_status=loc_node,
+            h_acc=h_acc,
+            config=self.guard_config,
+        )
+        if self.accuracy_guard.armed and not was_armed:
+            # Deliberately INFO: lets users sanity-check the RUNNING flip
+            # against real sessions while the locNode gate is young.
+            _LOGGER.info(
+                "Accuracy guard armed for %s (locNodeStatus=RUNNING, h_acc=%s m)",
+                self.thing_name,
+                h_acc,
+            )
+        if action is None:
+            return
+
+        if action == ACTION_RESUME:
+            # Guard-initiated pause recovered: resume the task. Same
+            # notification_id replaces the pause notification in the UI.
+            acc_str = f"{h_acc:.2f} m" if h_acc is not None else "unknown"
+            _LOGGER.info(
+                "Accuracy guard: RTK recovered for %s (h_acc=%s m) — resuming",
+                self.thing_name,
+                h_acc,
+            )
+            self.hass.bus.async_fire(
+                f"{DOMAIN}_accuracy_guard_triggered",
+                {
+                    "thing_name": self.thing_name,
+                    "action": action,
+                    "horizontal_accuracy": h_acc,
+                    "loc_node_status": loc_node,
+                },
+            )
+            persistent_notification.async_create(
+                self.hass,
+                f"RTK accuracy recovered (accuracy {acc_str}). Resuming mowing.",
+                title="Lymow accuracy guard",
+                notification_id=f"{DOMAIN}_accuracy_guard_{self.thing_name}",
+            )
+            self.hass.async_create_task(self._guard_dispatch("start_mowing"))
+            return
+
+        _LOGGER.warning(
+            "Accuracy guard tripped for %s: h_acc=%s m, locNodeStatus=%s -> %s",
+            self.thing_name,
+            h_acc,
+            loc_node,
+            action,
+        )
+        self.hass.bus.async_fire(
+            f"{DOMAIN}_accuracy_guard_triggered",
+            {
+                "thing_name": self.thing_name,
+                "action": action,
+                "horizontal_accuracy": h_acc,
+                "loc_node_status": loc_node,
+            },
+        )
+        acc_str = f"{h_acc:.2f} m" if h_acc is not None else "unknown"
+        persistent_notification.async_create(
+            self.hass,
+            (
+                f"RTK accuracy degraded (accuracy {acc_str}, localization "
+                f"{LOC_NODE_LABELS.get(loc_node, loc_node)}). "
+                f"Sending mower command: {action}."
+            ),
+            title="Lymow accuracy guard",
+            notification_id=f"{DOMAIN}_accuracy_guard_{self.thing_name}",
+        )
+        button = "dock" if action == ACTION_DOCK else "pause"
+        self.hass.async_create_task(self._guard_dispatch(button))
+
+    async def _guard_dispatch(self, button: str) -> None:
+        """Run the guard's command through the matrix-driven dispatch path."""
+        try:
+            await self.cmd_button_press(button)
+        except Exception:
+            # Guard stays latched — no retry storm. The warning log +
+            # persistent notification above already alerted the user.
+            _LOGGER.exception("Accuracy guard %s command failed", button)
 
     def _record_signal_sample(self) -> None:
         """Fold this broadcast's (pose, signal) readings into the heat-map grid.

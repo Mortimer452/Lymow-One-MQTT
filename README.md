@@ -24,8 +24,9 @@ The integration is strictly-passive by design, just listens to messages sent by 
 - **Live state sensors:** battery, work status, current zone (derived from mower position within map polygons), task progress, error messages.
 - **Multi-zone start service** for kicking off mows on a specific list of zones.
 - **Read-only schedule sensor** with the next upcoming run plus all schedules in attributes.
+- **RTK Accuracy Guard** — optional watchdog that docks (or pauses) the mower when RTK accuracy stays degraded, e.g. from a failing/overheating base station. The Pause variant auto-resumes once accuracy recovers.
 - **RTSP camera** entity streaming the mower's onboard camera over your LAN.
-- **Diagnostic sensors:** RTK quality, signal strength, firmware version, IP address, last-mow summary, error codes.
+- **Diagnostic sensors:** RTK quality, localization status, signal strength, firmware version, IP address, last-mow summary, error codes.
 - **Per-zone sensors:** Tracks last mow time per zone. Sensor attributes track mow count by zone, time spent, zone area.
 - **Push-driven** — no chattery polling for state, ~15-min REST poll only for online/offline detection.
 
@@ -62,6 +63,27 @@ Uses HA's built-in Lawn Mower Entity type. The entity only has three commands - 
 - Start: Starts a full mow using default order. When paused or docked for recharge-and-resume, resumes the task. Not available while mowing or in error condition.
 - Pause: Issues a pause command. Also clears an error condition if the mower is in error. Not available while docked.
 - Dock: Return to the dock. If mowing, saves the session for recharge-and-resume.
+
+## RTK Accuracy Guard
+
+Optional protection against a degraded RTK link (overheating base station, antenna trouble, interference): with poor corrections the mower keeps mowing on a meter-scale position estimate and can wander out of bounds — into flower beds, pools, or the road. When enabled, the guard watches horizontal accuracy while mowing and sends the mower home (or pauses it) when accuracy stays degraded.
+
+Configured through four entities in the device page's **Configuration** section (each has a longer explanation in its `description` attribute):
+
+| Entity | Default | Meaning |
+|---|---|---|
+| RTK Accuracy Guard | off | Master enable — off by default since it commands the mower autonomously |
+| RTK Accuracy Guard threshold | 100 cm | Horizontal accuracy above this counts as degraded (healthy RTK mowing typically reads under 5 cm) |
+| RTK Accuracy Guard time | 3 min | Degradation must persist this long before the guard acts — filters normal brief RTK jitter |
+| RTK Accuracy Guard action | Dock | **Dock** drives the mower home along its channel; **Pause** stops it in place |
+
+How it behaves:
+
+- **Arms itself when localization reports Running** after each task start (visible in the *Localization status* diagnostic sensor). GNSS convergence right after undocking produces wild accuracy readings for a minute or two — the guard ignores everything until the mower's localization stack says it's ready, so startup never false-triggers regardless of how long convergence takes.
+- **Losing the localization stack mid-mow** (status leaving Running) counts as degraded too, even if the last accuracy reading looked fine.
+- **Pause auto-resumes:** while the guard's own pause is in effect it keeps watching, and once accuracy is back under the threshold — sustained for the hold time — it resumes the task automatically. A pause *you* trigger is never auto-resumed, and the guard never resumes without good, current data.
+- **One action per incident:** after acting, the guard stays quiet until the task ends (or, for pause, until it resumes), then re-arms fresh for the next session.
+- Every action fires a **`lymow_mqtt_accuracy_guard_triggered` event** (`action`: `dock` / `pause` / `resume`, plus the accuracy reading and localization status) — hang an automation on it for phone notifications — and posts a persistent notification in the HA UI.
 
 ## RTSP camera
 
