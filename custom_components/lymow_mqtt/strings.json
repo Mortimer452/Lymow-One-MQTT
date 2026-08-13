@@ -80,17 +80,17 @@
     },
     "switch": {
       "auto_recharge": {"name": "Auto recharge & resume"},
-      "accuracy_guard": {"name": "Accuracy guard"}
+      "accuracy_guard": {"name": "RTK Accuracy Guard"}
     },
     "number": {
       "recharge_threshold": {"name": "Auto-dock below"},
       "resume_threshold": {"name": "Auto-resume above"},
-      "guard_threshold": {"name": "Guard accuracy limit"},
-      "guard_hold_time": {"name": "Guard hold time"}
+      "guard_threshold": {"name": "RTK Accuracy Guard threshold"},
+      "guard_hold_time": {"name": "RTK Accuracy Guard time"}
     },
     "select": {
       "guard_action": {
-        "name": "Guard action",
+        "name": "RTK Accuracy Guard action",
         "state": {
           "dock": "Dock",
           "pause": "Pause"
