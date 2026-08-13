@@ -32,7 +32,13 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import state as state_mod
-from .const import DOMAIN, WARNING_CODE_LABELS, error_label, work_status_label
+from .const import (
+    DOMAIN,
+    LOC_NODE_LABELS,
+    WARNING_CODE_LABELS,
+    error_label,
+    work_status_label,
+)
 from .coordinator import LymowCoordinator
 from .entity_base import LymowEntity
 from .protocol import ZoneInfo
@@ -153,6 +159,21 @@ def _rtk_quality(s):
         2: "Float fix",  # FLOAT_FIXED — RTK sub-meter
         3: "Fixed cm",   # FIXED — RTK centimeter
     }.get(li.positionQuality, f"unknown ({li.positionQuality})")
+
+
+def _localization_status(s):
+    """LocNodeStatus label — lifecycle of the localization algorithm node.
+
+    "Running" is the "accuracy readings are now trustworthy" marker (arch.md
+    §5d): during dock-sleep wake-up the node walks None/Waiting/Initializing
+    with garbage accuracy values. The accuracy guard arms on Running; this
+    sensor makes that state visible and automatable.
+    """
+    li = s.get("localizationInfo")
+    if li is None:
+        return None
+    v = li.locNodeStatus
+    return LOC_NODE_LABELS.get(v, f"unknown ({v})")
 
 
 def _horizontal_accuracy(s):
@@ -368,6 +389,13 @@ DIAGNOSTIC_SENSORS: tuple[LymowSensorDesc, ...] = (
         translation_key="warning_code",
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=_warning_code,
+    ),
+    LymowSensorDesc(
+        key="localization_status",
+        translation_key="localization_status",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:crosshairs-gps",
+        value_fn=_localization_status,
     ),
     LymowSensorDesc(
         key="rtk_quality",

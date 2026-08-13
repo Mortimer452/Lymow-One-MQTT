@@ -9,7 +9,7 @@ from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .const import CONF_GUARD_ENABLED, DOMAIN
 from .coordinator import LymowCoordinator
 from .entity_base import LymowEntity
 
@@ -73,8 +73,46 @@ class LymowAutoRechargeSwitch(LymowEntity, SwitchEntity):
         await self.coordinator.cmd_set_auto_recharge(False)
 
 
+class LymowAccuracyGuardSwitch(LymowEntity, SwitchEntity):
+    """Enable the RTK accuracy guard (accuracy_guard.py).
+
+    When ON, the integration watches horizontalAccuracy while mowing and
+    docks (or pauses) the mower on sustained degradation — protection
+    against a failing RTK base station letting the mower wander out of
+    bounds. Off by default: it commands the mower autonomously, so it
+    must be an explicit user choice.
+
+    HA-side setting stored in config-entry options — no firmware traffic.
+    """
+
+    _attr_translation_key = "accuracy_guard"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:satellite-uplink"
+
+    def __init__(self, coordinator: LymowCoordinator) -> None:
+        super().__init__(coordinator, "accuracy_guard")
+
+    @property
+    def available(self) -> bool:
+        # Local setting — editable even while the mower is offline.
+        return True
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.guard_config.enabled
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        self.coordinator.set_guard_option(CONF_GUARD_ENABLED, True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        self.coordinator.set_guard_option(CONF_GUARD_ENABLED, False)
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     coord: LymowCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([LymowAutoRechargeSwitch(coord)])
+    async_add_entities([
+        LymowAutoRechargeSwitch(coord),
+        LymowAccuracyGuardSwitch(coord),
+    ])

@@ -52,6 +52,7 @@
       "error_message": {"name": "Error message"},
       "error_code": {"name": "Error code"},
       "warning_code": {"name": "Warning code"},
+      "localization_status": {"name": "Localization status"},
       "rtk_quality": {"name": "RTK quality"},
       "horizontal_accuracy": {"name": "Horizontal accuracy"},
       "wifi_signal": {"name": "WiFi signal"},
@@ -78,11 +79,23 @@
       "mower_position": {"name": "Mower position"}
     },
     "switch": {
-      "auto_recharge": {"name": "Auto recharge & resume"}
+      "auto_recharge": {"name": "Auto recharge & resume"},
+      "accuracy_guard": {"name": "Accuracy guard"}
     },
     "number": {
       "recharge_threshold": {"name": "Auto-dock below"},
-      "resume_threshold": {"name": "Auto-resume above"}
+      "resume_threshold": {"name": "Auto-resume above"},
+      "guard_threshold": {"name": "Guard accuracy limit"},
+      "guard_hold_time": {"name": "Guard hold time"}
+    },
+    "select": {
+      "guard_action": {
+        "name": "Guard action",
+        "state": {
+          "dock": "Dock",
+          "pause": "Pause"
+        }
+      }
     },
     "update": {
       "firmware_update": {"name": "Firmware update"}
