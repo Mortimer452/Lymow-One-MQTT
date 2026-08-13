@@ -33,6 +33,37 @@ class TestPointInPolygon:
         assert state.point_in_polygon(0.5, 0.5, [(0, 0), (1, 0)]) is False  # degenerate
 
 
+class TestPointToPolygonEdgeDistance:
+    """Distance from a point to the nearest edge of a closed polygon.
+
+    Backs the edge-buffer rescue in compute_current_zone_cache /
+    derive_current_zone: RTK jitter during perimeter hugs and channel
+    transits puts the pose centimeters outside the polygon, and the raw
+    ray-cast then reports "not in any zone/channel".
+    """
+
+    SQUARE = [(0, 0), (1, 0), (1, 1), (0, 1)]
+
+    def test_point_outside_near_edge(self):
+        assert state.point_to_polygon_edge_distance(1.3, 0.5, self.SQUARE) == pytest.approx(0.3)
+
+    def test_point_outside_near_corner_uses_euclidean_distance(self):
+        # (2, 2) is nearest the (1, 1) corner: sqrt(2) away
+        assert state.point_to_polygon_edge_distance(2.0, 2.0, self.SQUARE) == pytest.approx(2 ** 0.5)
+
+    def test_point_inside_measures_distance_to_boundary(self):
+        # Unsigned distance — callers only invoke this after a strict
+        # containment miss, but the helper itself doesn't care about side.
+        assert state.point_to_polygon_edge_distance(0.5, 0.5, self.SQUARE) == pytest.approx(0.5)
+
+    def test_point_on_edge_is_zero(self):
+        assert state.point_to_polygon_edge_distance(1.0, 0.5, self.SQUARE) == pytest.approx(0.0)
+
+    def test_degenerate_polygon_returns_infinity(self):
+        assert state.point_to_polygon_edge_distance(0.5, 0.5, []) == float("inf")
+        assert state.point_to_polygon_edge_distance(0.5, 0.5, [(0, 0)]) == float("inf")
+
+
 class TestPolygonArea:
     """Shoelace formula for zone area calculation. Polygon points are
     local-frame meters, result is m²."""
@@ -328,6 +359,157 @@ class TestCurrentZoneCache:
         assert state_mod.compute_current_zone_cache(s) is None
         # Both missing
         assert state_mod.compute_current_zone_cache({}) is None
+
+    def test_pose_just_outside_zone_edge_still_attributed_to_zone(self):
+        """Perimeter-hug rescue: 0.3 m outside the polygon (within the
+        0.5 m buffer) counts as in-zone. The mower hugs the boundary on
+        its first perimeter lap and honest RTK jitter lands it just
+        outside, flickering current_zone to unknown without this."""
+        from lymow_mqtt import state as state_mod
+        s = self._state_with_zones((5.3, 2.5))  # 0.3 m right of z1's edge
+        result = state_mod.compute_current_zone_cache(s)
+        assert result == "aaa11111"
+        assert s["_current_zone_hash_id"] == "aaa11111"
+
+    def test_pose_beyond_buffer_not_attributed(self):
+        from lymow_mqtt import state as state_mod
+        s = self._state_with_zones((5.6, 2.5))  # 0.6 m out — beyond buffer
+        assert state_mod.compute_current_zone_cache(s) is None
+        assert s["_current_zone_hash_id"] is None
+
+    def test_zone_at_pose_fallback_walk_also_applies_buffer(self):
+        """The no-cache fallback path must stay consistent with the cache
+        writer — active_cut_config relies on this so per-zone cut settings
+        don't drop to global during a perimeter hug."""
+        from lymow_mqtt import state as state_mod
+        s = self._state_with_zones((5.3, 2.5))
+        assert "_current_zone_hash_id" not in s
+        zone = state_mod.zone_at_pose(s)
+        assert zone is not None
+        assert zone.hash_id == "aaa11111"
+
+
+class TestDeriveCurrentZone:
+    """Priority contract: strict zone → strict channel → nearest buffered
+    geometry (zone or channel) within 0.5 m → None.
+
+    Layout: "Front" zone is a 10×10 square at origin; a docking channel
+    is a narrow 4×2 corridor attached to its right edge (x 10→14,
+    y 4→6); "Back" zone sits far away and connects via a second channel.
+    """
+
+    def _state(self, pose_xy):
+        import lymow_extracted_pb2 as pb
+        from lymow_mqtt.protocol import ChannelInfo, ZoneCatalog, ZoneInfo
+
+        class _P:
+            def __init__(self, x, y): self.x, self.y = x, y
+
+        front = ZoneInfo(
+            hash_id="front111", name="Front",
+            mow_order=1, is_enabled=True,
+            polygon_points=[(0, 0), (10, 0), (10, 10), (0, 10)],
+        )
+        back = ZoneInfo(
+            hash_id="back2222", name="Back",
+            mow_order=2, is_enabled=True,
+            polygon_points=[(30, 0), (40, 0), (40, 10), (30, 10)],
+        )
+        cat = ZoneCatalog()
+        cat.zones.extend([front, back])
+        cat.zones_by_hashid[front.hash_id] = front
+        cat.zones_by_hashid[back.hash_id] = back
+        cat.channels.append(ChannelInfo(
+            hash_id="chdock11", zone1="charging_area", zone2="front111",
+            is_docking_channel=True,
+            polygon_points=[(10, 4), (14, 4), (14, 6), (10, 6)],
+        ))
+        cat.channels.append(ChannelInfo(
+            hash_id="chzone22", zone1="front111", zone2="back2222",
+            is_docking_channel=False,
+            polygon_points=[(10, 20), (30, 20), (30, 22), (10, 22)],
+        ))
+        ri = pb.PbRobotInfo()
+        ri.workStatus = 2  # MOWING
+        return {
+            "pose": _P(*pose_xy),
+            "zone_catalog": cat,
+            "robotInfo": ri,
+        }
+
+    def test_strictly_inside_zone(self):
+        assert state.derive_current_zone(self._state((5, 5))) == "Front"
+
+    def test_strictly_inside_docking_channel(self):
+        assert state.derive_current_zone(self._state((12, 5))) == "→ dock"
+
+    def test_strictly_inside_zone_to_zone_channel(self):
+        assert state.derive_current_zone(self._state((20, 21))) == "Front → Back"
+
+    def test_jitter_outside_zone_edge_rescued(self):
+        # 0.3 m above Front's top edge, nowhere near a channel
+        assert state.derive_current_zone(self._state((5, 10.3))) == "Front"
+
+    def test_jitter_outside_channel_edge_rescued(self):
+        # 0.4 m above the docking channel's top edge; 2 m from Front's
+        # right edge, so the channel is the only in-buffer geometry
+        assert state.derive_current_zone(self._state((12, 6.4))) == "→ dock"
+
+    def test_channel_mouth_nearest_geometry_wins_channel(self):
+        # 0.3 m right of Front's edge (x=10) but only 0.2 m above the
+        # channel's top edge (y=6) → channel is nearer
+        assert state.derive_current_zone(self._state((10.3, 6.2))) == "→ dock"
+
+    def test_channel_mouth_nearest_geometry_wins_zone(self):
+        # 0.2 m right of Front's edge, 0.35 m above the channel edge
+        assert state.derive_current_zone(self._state((10.2, 6.35))) == "Front"
+
+    def test_beyond_buffer_returns_none(self):
+        assert state.derive_current_zone(self._state((5, 10.6))) is None
+
+    def test_strict_zone_wins_over_channel_even_when_channel_nearer(self):
+        # (9.9, 5.9) is strictly inside Front — 0.1 m from both the zone
+        # edge and the channel polygon. Strict containment short-circuits;
+        # no buffer comparison happens.
+        assert state.derive_current_zone(self._state((9.9, 5.9))) == "Front"
+
+
+class TestActiveCutConfigBufferedZone:
+    def test_zone_tier_retained_during_perimeter_hug(self):
+        """Pose 0.3 m outside the zone polygon (RTK jitter on a perimeter
+        lap) must still resolve the zone tier, not fall through to the
+        global runtime config."""
+        import lymow_extracted_pb2 as pb
+        from lymow_mqtt.protocol import ZoneCatalog, ZoneInfo
+        zone = ZoneInfo(
+            hash_id="abc12345", name="Pool",
+            mow_order=1, is_enabled=True,
+            polygon_points=[(0, 0), (10, 0), (10, 10), (0, 10)],
+        )
+        zone.zone_config = pb.PbZoneConfig()
+        zone.zone_config.cutSpeed = 5
+        zone.zone_config.cutHeight = 50
+        zone.zone_config.moveSpeed = 0.6
+        catalog = ZoneCatalog()
+        catalog.zones.append(zone)
+        catalog.zones_by_hashid[zone.hash_id] = zone
+        rtc = pb.PbRunTimeConfig()
+        rtc.cutHeight = 99
+        rtc.cutSpeed = 6
+        rtc.moveSpeed = 1.0
+        catalog.runtime_config = rtc
+
+        pose = pb.PbPose()
+        pose.x = 10.3  # 0.3 m outside the right edge
+        pose.y = 5.0
+        ri = pb.PbRobotInfo()
+        ri.workStatus = 2
+
+        s = {"zone_catalog": catalog, "pose": pose, "robotInfo": ri}
+        result = state.active_cut_config(s)
+        assert result["cut_height"] == 50
+        assert result["cut_speed"] == 5
+        assert result["move_speed"] == pytest.approx(0.6)
 
 
 class TestTaskZonesHelpers:
