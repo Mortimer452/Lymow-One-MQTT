@@ -165,14 +165,16 @@ class LymowGuardThresholdNumber(_LymowGuardNumber):
 
     _attr_translation_key = "guard_threshold"
     _attr_icon = "mdi:crosshairs-gps"
-    # DISTANCE device_class + native meters = HA's built-in unit conversion,
-    # same as the horizontal_accuracy sensor this threshold is compared
-    # against — imperial users see/enter feet, the option stays meters.
+    # DISTANCE device_class + built-in unit conversion. Native unit is
+    # CENTIMETERS (imperial users see/enter inches) — cm/in is the natural
+    # scale for an RTK jitter threshold. The stored option and the guard's
+    # comparison against horizontalAccuracy stay in METERS; this entity
+    # converts at the boundary (×100 / ÷100).
     _attr_device_class = NumberDeviceClass.DISTANCE
-    _attr_native_min_value = 0.1
-    _attr_native_max_value = 10.0
-    _attr_native_step = 0.1
-    _attr_native_unit_of_measurement = UnitOfLength.METERS
+    _attr_native_min_value = 10
+    _attr_native_max_value = 1000
+    _attr_native_step = 1
+    _attr_native_unit_of_measurement = UnitOfLength.CENTIMETERS
     _attr_mode = NumberMode.BOX
 
     def __init__(self, coordinator: LymowCoordinator) -> None:
@@ -180,12 +182,12 @@ class LymowGuardThresholdNumber(_LymowGuardNumber):
 
     @property
     def native_value(self) -> float:
-        return self.coordinator.guard_config.threshold_m
+        return self.coordinator.guard_config.threshold_m * 100.0
 
     async def async_set_native_value(self, value: float) -> None:
-        # Two decimals, not one: HA hands us native meters, and an imperial
-        # entry (e.g. 3 ft = 0.9144 m) shouldn't quantize to a whole 0.1 m.
-        self.coordinator.set_guard_option(CONF_GUARD_THRESHOLD, round(value, 2))
+        # value arrives in native cm; store meters. round(…, 4) keeps
+        # imperial entries exact (36 in = 91.44 cm -> 0.9144 m).
+        self.coordinator.set_guard_option(CONF_GUARD_THRESHOLD, round(value / 100.0, 4))
 
 
 class LymowGuardHoldNumber(_LymowGuardNumber):
