@@ -165,6 +165,10 @@ class LymowGuardThresholdNumber(_LymowGuardNumber):
 
     _attr_translation_key = "guard_threshold"
     _attr_icon = "mdi:crosshairs-gps"
+    # DISTANCE device_class + native meters = HA's built-in unit conversion,
+    # same as the horizontal_accuracy sensor this threshold is compared
+    # against — imperial users see/enter feet, the option stays meters.
+    _attr_device_class = NumberDeviceClass.DISTANCE
     _attr_native_min_value = 0.1
     _attr_native_max_value = 10.0
     _attr_native_step = 0.1
@@ -179,7 +183,9 @@ class LymowGuardThresholdNumber(_LymowGuardNumber):
         return self.coordinator.guard_config.threshold_m
 
     async def async_set_native_value(self, value: float) -> None:
-        self.coordinator.set_guard_option(CONF_GUARD_THRESHOLD, round(value, 1))
+        # Two decimals, not one: HA hands us native meters, and an imperial
+        # entry (e.g. 3 ft = 0.9144 m) shouldn't quantize to a whole 0.1 m.
+        self.coordinator.set_guard_option(CONF_GUARD_THRESHOLD, round(value, 2))
 
 
 class LymowGuardHoldNumber(_LymowGuardNumber):
