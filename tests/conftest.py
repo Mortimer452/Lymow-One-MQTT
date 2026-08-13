@@ -12,8 +12,11 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "custom_components"))
 # Also expose the package directory so `import lymow_extracted_pb2` works
-# in tests (matching how the harness imports it).
-sys.path.insert(0, str(_REPO_ROOT / "custom_components" / "lymow_mqtt"))
+# in tests (matching how the harness imports it). APPEND, don't prepend:
+# the package contains select.py (the HA select platform), which would
+# shadow Python's stdlib `select` module for anything that transitively
+# imports it (aiohttp does, via rest.py) if this path won the lookup.
+sys.path.append(str(_REPO_ROOT / "custom_components" / "lymow_mqtt"))
 
 # The integration's __init__.py imports homeassistant and voluptuous, which
 # aren't available in the unit-test environment. Inject a stub package object

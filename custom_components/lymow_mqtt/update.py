@@ -22,6 +22,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from . import rest as rest_mod
 from .const import DOMAIN, WORK_STATUS_UPDATING
 from .coordinator import LymowCoordinator
 from .entity_base import LymowEntity
@@ -163,10 +164,15 @@ class LymowUpdateEntity(LymowEntity, UpdateEntity):
             self._object_key = None
             self._release_notes_text = None
         else:
-            self._object_key = latest_fw
+            # v2.1.50+ responses carry a `prefix` ("rk3588/v2.1.50/") that
+            # must be joined with latestVersion to form the real S3 key;
+            # older responses have no prefix and the bare key is correct.
+            self._object_key = rest_mod.build_ota_object_key(
+                latest_fw, data.get("prefix")
+            )
             # Extract display version by stripping the build suffix:
             #   "v2.1.48.1_20260528" → "v2.1.48.1"
-            #   "v2.1.46_lymow_0.1.0" → "v2.1.46"
+            #   "v2.1.50_20260813_incremental" → "v2.1.50"
             self._latest_version = latest_fw.split("_", 1)[0]
             raw_notes = data.get("releaseNote", "")
             self._release_notes_text = (
