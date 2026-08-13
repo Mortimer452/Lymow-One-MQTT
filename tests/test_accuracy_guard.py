@@ -13,6 +13,7 @@ Key design points under test (arch.md §5d, capture_20260813_150340):
 """
 from __future__ import annotations
 
+import pytest
 from lymow_mqtt.accuracy_guard import ACTION_RESUME, AccuracyGuard, GuardConfig
 from lymow_mqtt.const import (
     LOC_NODE_INITIALIZING,
@@ -23,6 +24,7 @@ from lymow_mqtt.const import (
     WORK_STATUS_MOWING,
     WORK_STATUS_PAUSE,
     WORK_STATUS_WAITING,
+    guard_threshold_unit,
 )
 
 CFG = GuardConfig(enabled=True, threshold_m=1.0, hold_s=180.0, action="dock")
@@ -35,6 +37,48 @@ def _mow(guard, now, loc_node=LOC_NODE_RUNNING, h_acc=0.05, cfg=CFG,
         now=now, work_status=work_status,
         loc_node_status=loc_node, h_acc=h_acc, config=cfg,
     )
+
+
+class TestGuardThresholdUnit:
+    """The guard-threshold number must display in the user's unit system.
+
+    Root cause this guards against: the HA `number` domain does NOT
+    auto-convert by unit system (only `sensor` does). A number entity shows
+    its native unit verbatim, so the entity has to pick inches vs cm itself.
+    Internal storage (guard_config.threshold_m) stays METERS either way.
+    """
+
+    def test_metric_uses_centimeters(self):
+        cfg = guard_threshold_unit(imperial=False)
+        assert cfg["unit"] == "cm"
+        assert cfg["m_per_unit"] == pytest.approx(0.01)
+
+    def test_imperial_uses_inches(self):
+        cfg = guard_threshold_unit(imperial=True)
+        assert cfg["unit"] == "in"
+        assert cfg["m_per_unit"] == pytest.approx(0.0254)
+
+    def test_metric_round_trip_1m(self):
+        cfg = guard_threshold_unit(imperial=False)
+        # 1.0 m -> 100 cm -> 1.0 m
+        display = 1.0 / cfg["m_per_unit"]
+        assert display == pytest.approx(100.0)
+        assert display * cfg["m_per_unit"] == pytest.approx(1.0)
+
+    def test_imperial_round_trip_1m(self):
+        cfg = guard_threshold_unit(imperial=True)
+        # 1.0 m -> ~39.37 in -> 1.0 m
+        display = 1.0 / cfg["m_per_unit"]
+        assert display == pytest.approx(39.3701, abs=1e-3)
+        assert display * cfg["m_per_unit"] == pytest.approx(1.0)
+
+    def test_bounds_cover_a_sane_range_both_systems(self):
+        # min should be a few cm-equivalent; max should be several meters.
+        for imperial in (False, True):
+            cfg = guard_threshold_unit(imperial)
+            assert cfg["min"] * cfg["m_per_unit"] <= 0.05   # <= ~5 cm floor
+            assert cfg["max"] * cfg["m_per_unit"] >= 5.0     # >= 5 m ceiling
+            assert cfg["step"] > 0
 
 
 class TestArming:

@@ -797,6 +797,15 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Set `rrConfig.resumeBat` — battery % at which the mower auto-resumes."""
         await self._send_rr_update(resume_bat=int(value))
 
+    async def cmd_set_dock_on_error(self, enabled: bool) -> None:
+        """Toggle `robotConfig.dockOnError` — auto-return-to-dock on error.
+
+        A top-level robotConfig scalar (not rrConfig), so no carry-forward
+        is needed — the firmware merges this single field. Confirmation
+        arrives as an updated robotConfig broadcast within ~1s.
+        """
+        await self._publish_raw(protocol.encode_set_dock_on_error(enabled))
+
     async def _wait_for_state(self, expected: set[int], timeout: float) -> bool:
         """Wait until robotInfo.workStatus or robotStatus is in expected, or timeout.
 

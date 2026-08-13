@@ -21,6 +21,7 @@ The integration is strictly-passive by design, just listens to messages sent by 
 - **Device tracker integration** with live GPS coordinates showing the position of mower and RTK station in HA's map
 - **Lymow map rendering** your mow map rendered in PNG shows actual mower position, highlights zone the mower is currently located in (orange), current active mowing zones (green) and with RTK signal quality heat-map overlay. Heat map will be blank at first but should fill in over time as the mower traverses your property.
 - **Customize recharge/resume** enable/disable, set low and high battery thresholds for auto-recharge-resume
+- **Auto return to dock on error** switch — mirrors the app's setting; the mower docks itself if it sits in an error state untouched for ~30 min (fixed firmware timeout).
 - **Live state sensors:** battery, work status, current zone (derived from mower position within map polygons), task progress, error messages.
 - **Multi-zone start service** for kicking off mows on a specific list of zones.
 - **Read-only schedule sensor** with the next upcoming run plus all schedules in attributes.

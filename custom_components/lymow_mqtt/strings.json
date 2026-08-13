@@ -80,7 +80,8 @@
     },
     "switch": {
       "auto_recharge": {"name": "Auto recharge & resume"},
-      "accuracy_guard": {"name": "RTK Accuracy Guard"}
+      "accuracy_guard": {"name": "RTK Accuracy Guard"},
+      "dock_on_error": {"name": "Auto return to dock on error"}
     },
     "number": {
       "recharge_threshold": {"name": "Auto-dock below"},

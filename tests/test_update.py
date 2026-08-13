@@ -85,3 +85,75 @@ class TestWorkStatusUpdating:
 
     def test_value(self) -> None:
         assert WORK_STATUS_UPDATING == 11
+
+
+class TestOtaObjectKey:
+    """v2.1.50 OTA scheme (2026-08-13): check-update grew a `prefix` field
+    ("rk3588/v2.1.50/") and the real S3 objectKey is prefix + latestVersion.
+    Sending the bare latestVersion makes create-ota-job 500 ("UnknownError").
+    Verified live: the joined key created job 8687eb46-... successfully
+    (spike_create_ota_job.py). Pre-2.1.50 responses have no prefix and the
+    bare key remains correct.
+    """
+
+    def test_joins_prefix_and_version(self) -> None:
+        from lymow_mqtt.rest import build_ota_object_key
+        assert build_ota_object_key(
+            "v2.1.50_20260813_incremental", "rk3588/v2.1.50/"
+        ) == "rk3588/v2.1.50/v2.1.50_20260813_incremental"
+
+    def test_no_prefix_returns_bare_key(self) -> None:
+        from lymow_mqtt.rest import build_ota_object_key
+        assert build_ota_object_key("v2.1.48.1_20260528", None) == "v2.1.48.1_20260528"
+
+    def test_empty_prefix_returns_bare_key(self) -> None:
+        from lymow_mqtt.rest import build_ota_object_key
+        assert build_ota_object_key("v2.1.48.1_20260528", "") == "v2.1.48.1_20260528"
+
+    def test_pure_concat_no_separator_inserted(self) -> None:
+        # Matches the app exactly (3.0.8 decompiled.js:1626040): pure
+        # "".concat(prefix, version), no slash normalization. The server
+        # always supplies the trailing slash in `prefix`; inserting our
+        # own separator would diverge from the reference implementation.
+        from lymow_mqtt.rest import build_ota_object_key
+        assert build_ota_object_key(
+            "v2.1.50_20260813_incremental", "rk3588/v2.1.50"
+        ) == "rk3588/v2.1.50v2.1.50_20260813_incremental"
+
+
+class TestOtaCreateJobPath:
+    """The objectKey now contains slashes — the query param MUST be
+    URL-encoded (the app uses encodeURIComponent; %2F on the wire)."""
+
+    def test_slashes_are_percent_encoded(self) -> None:
+        from lymow_mqtt.rest import ota_create_job_path
+        path = ota_create_job_path(
+            "device_3ba863e1d677", "rk3588/v2.1.50/v2.1.50_20260813_incremental"
+        )
+        assert path == (
+            "/create-ota-job?deviceThingName=device_3ba863e1d677"
+            "&objectKey=rk3588%2Fv2.1.50%2Fv2.1.50_20260813_incremental"
+        )
+
+    def test_legacy_key_unchanged_on_the_wire(self) -> None:
+        from lymow_mqtt.rest import ota_create_job_path
+        path = ota_create_job_path("device_abc", "v2.1.48.1_20260528")
+        assert path == (
+            "/create-ota-job?deviceThingName=device_abc"
+            "&objectKey=v2.1.48.1_20260528"
+        )
+
+
+class TestDisplayVersionNewFormat:
+    """Display extraction and version comparison operate on latestVersion
+    (NOT the joined objectKey) and must handle the new _incremental suffix."""
+
+    def test_display_strips_incremental_suffix(self) -> None:
+        latest = "v2.1.50_20260813_incremental"
+        assert latest.split("_", 1)[0] == "v2.1.50"
+
+    def test_installed_2150_matches_new_format(self) -> None:
+        assert "v2.1.50_" in "v2.1.50_20260813_incremental"
+
+    def test_installed_2149_does_not_match(self) -> None:
+        assert "v2.1.49.3_" not in "v2.1.50_20260813_incremental"

@@ -32,14 +32,19 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
     EntityCategory,
-    UnitOfLength,
     UnitOfTime,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 
-from .const import CONF_GUARD_HOLD_MIN, CONF_GUARD_THRESHOLD, DOMAIN
+from .const import (
+    CONF_GUARD_HOLD_MIN,
+    CONF_GUARD_THRESHOLD,
+    DOMAIN,
+    guard_threshold_unit,
+)
 from .coordinator import LymowCoordinator
 from .entity_base import LymowEntity
 
@@ -165,19 +170,13 @@ class LymowGuardThresholdNumber(_LymowGuardNumber):
 
     _attr_translation_key = "guard_threshold"
     _attr_icon = "mdi:crosshairs-gps"
-    # DISTANCE device_class + built-in unit conversion. Native unit is
-    # CENTIMETERS (imperial users see/enter inches) — cm/in is the natural
-    # scale for an RTK jitter threshold. The stored option and the guard's
-    # comparison against horizontalAccuracy stay in METERS; this entity
-    # converts at the boundary (×100 / ÷100).
-    _attr_device_class = NumberDeviceClass.DISTANCE
-    _attr_native_min_value = 1
-    _attr_native_max_value = 1000
-    _attr_native_step = 1
-    _attr_native_unit_of_measurement = UnitOfLength.CENTIMETERS
     _attr_mode = NumberMode.BOX
-    # HA has no native per-entity help text; a static attribute shows in
-    # the more-info dialog's Attributes section (same pattern below).
+    # NO device_class DISTANCE: the number domain does NOT auto-convert by
+    # unit system (only sensors do — they get a suggested_unit_of_measurement
+    # registry option; a number shows its native unit verbatim). So we pick
+    # the display unit ourselves from hass.config.units in __init__ (cm for
+    # metric, inches for imperial). Stored option + guard comparison stay in
+    # METERS; this entity converts at the boundary via m_per_unit.
     _attr_extra_state_attributes = {
         "description": (
             "Horizontal accuracy above this counts as degraded. Healthy "
@@ -188,15 +187,24 @@ class LymowGuardThresholdNumber(_LymowGuardNumber):
 
     def __init__(self, coordinator: LymowCoordinator) -> None:
         super().__init__(coordinator, "guard_threshold")
+        imperial = coordinator.hass.config.units is US_CUSTOMARY_SYSTEM
+        cfg = guard_threshold_unit(imperial)
+        self._m_per_unit: float = cfg["m_per_unit"]
+        self._attr_native_unit_of_measurement = cfg["unit"]
+        self._attr_native_min_value = cfg["min"]
+        self._attr_native_max_value = cfg["max"]
+        self._attr_native_step = cfg["step"]
 
     @property
     def native_value(self) -> float:
-        return self.coordinator.guard_config.threshold_m * 100.0
+        return self.coordinator.guard_config.threshold_m / self._m_per_unit
 
     async def async_set_native_value(self, value: float) -> None:
-        # value arrives in native cm; store meters. round(…, 4) keeps
-        # imperial entries exact (36 in = 91.44 cm -> 0.9144 m).
-        self.coordinator.set_guard_option(CONF_GUARD_THRESHOLD, round(value / 100.0, 4))
+        # value arrives in the entity's display unit; store meters.
+        # round(…, 4) keeps entries exact (e.g. 36 in = 0.9144 m).
+        self.coordinator.set_guard_option(
+            CONF_GUARD_THRESHOLD, round(value * self._m_per_unit, 4)
+        )
 
 
 class LymowGuardHoldNumber(_LymowGuardNumber):

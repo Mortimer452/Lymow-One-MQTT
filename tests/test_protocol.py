@@ -69,6 +69,46 @@ class TestEncodeUploadRobotConfig:
         assert not msg.debugSetting.HasField("uploadTaskConfig") or not msg.debugSetting.uploadTaskConfig
 
 
+class TestEncodeSetDockOnError:
+    """`dockOnError` (PbRobotConfig field 22, bool) — auto-return-to-dock
+    when the mower sits in error untouched for ~30 min. Same no-userCtrl
+    robotConfig write pattern as setRR; the app sends only this one field
+    (3.0.8 decompiled.js:348143, arch.md §5f)."""
+
+    def test_sets_dock_on_error_true(self):
+        import lymow_extracted_pb2 as pb
+        raw = protocol.encode_set_dock_on_error(True)
+        msg = pb.PbInput()
+        msg.ParseFromString(raw)
+        assert msg.version == 40
+        assert not msg.HasField("userCtrl") or msg.userCtrl == 0
+        assert msg.robotConfig.dockOnError is True
+        # Triggers a confirmation broadcast so the switch can read back state.
+        assert msg.debugSetting.uploadRobotConfig is True
+
+    def test_sets_dock_on_error_false(self):
+        import lymow_extracted_pb2 as pb
+        raw = protocol.encode_set_dock_on_error(False)
+        msg = pb.PbInput()
+        msg.ParseFromString(raw)
+        # proto3 explicit-presence: the field must be ON THE WIRE as False,
+        # not omitted — otherwise the firmware can't tell "disable" from
+        # "field not mentioned".
+        assert msg.HasField("robotConfig")
+        assert msg.robotConfig.HasField("dockOnError")
+        assert msg.robotConfig.dockOnError is False
+
+    def test_does_not_touch_rrconfig(self):
+        """dockOnError is a top-level robotConfig scalar — writing it must
+        not emit an rrConfig sub-message (which would risk clobbering the
+        auto-recharge settings under the firmware's replace semantics)."""
+        import lymow_extracted_pb2 as pb
+        raw = protocol.encode_set_dock_on_error(True)
+        msg = pb.PbInput()
+        msg.ParseFromString(raw)
+        assert not msg.robotConfig.HasField("rrConfig")
+
+
 class TestEncodeSetRrConfig:
     """The no-userCtrl `setRR` payload (arch.md §6g) — verified via
     spike_set_rrconfig.py round-trip on 2026-05-10."""

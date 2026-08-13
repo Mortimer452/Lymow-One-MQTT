@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
+from urllib.parse import quote
 
 import aiohttp
 
@@ -18,6 +19,37 @@ from .auth import CognitoAuth
 from .const import API_ENDPOINTS
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def build_ota_object_key(latest_version: str, prefix: str | None) -> str:
+    """Join check-update's `prefix` and `latestVersion` into the S3 objectKey.
+
+    Firmware v2.1.50 (2026-08-13) introduced full/incremental OTA packages
+    stored under a per-version S3 prefix; check-update grew a `prefix`
+    field ("rk3588/v2.1.50/") and create-ota-job 500s ("UnknownError") on
+    the bare latestVersion the pre-2.1.50 flow sent. Verified live: the
+    joined key creates a working job (arch.md §4a). Older responses carry
+    no prefix — the bare key remains correct for them.
+
+    Pure concatenation, matching the app (3.0.8 decompiled.js:1626040 does
+    ``"".concat(prefix, latestVersion)`` with NO slash normalization — it
+    relies on the server always including the trailing slash in `prefix`,
+    as the observed "rk3588/v2.1.50/" does). We deliberately do NOT insert
+    a separator: diverging from the app's exact behavior risks breaking
+    where the app works.
+    """
+    if not prefix:
+        return latest_version
+    return prefix + latest_version
+
+
+def ota_create_job_path(thing_name: str, object_key: str) -> str:
+    """Build the create-ota-job path. objectKey may contain slashes now —
+    percent-encode it like the app does (encodeURIComponent)."""
+    return (
+        f"/create-ota-job?deviceThingName={quote(thing_name, safe='')}"
+        f"&objectKey={quote(object_key, safe='')}"
+    )
 
 
 class LymowREST:
@@ -88,10 +120,14 @@ class LymowREST:
         return data if isinstance(data, dict) else None
 
     async def create_ota_job(self, thing_name: str, object_key: str) -> str | None:
-        """Trigger an OTA update via AWS IoT Jobs. Returns the jobId."""
+        """Trigger an OTA update via AWS IoT Jobs. Returns the jobId.
+
+        object_key must be the FULL S3 key — for v2.1.50+ that means
+        prefix-joined via build_ota_object_key (the caller does this).
+        """
         data = await self._get(
             "createOtaJobApi",
-            f"/create-ota-job?deviceThingName={thing_name}&objectKey={object_key}",
+            ota_create_job_path(thing_name, object_key),
         )
         if isinstance(data, dict):
             return data.get("jobId")
