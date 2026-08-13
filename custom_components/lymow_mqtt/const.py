@@ -202,6 +202,25 @@ GUARD_DEFAULT_THRESHOLD_M = 1.0
 GUARD_DEFAULT_HOLD_MIN    = 3.0
 GUARD_DEFAULT_ACTION      = "dock"
 
+
+def guard_threshold_unit(imperial: bool) -> dict:
+    """Display-unit config for the guard-threshold number entity.
+
+    The HA `number` domain does NOT auto-convert by unit system — only
+    `sensor` does (it injects a `suggested_unit_of_measurement` registry
+    option; a number shows its native unit verbatim). So the threshold
+    entity picks its own display unit here from ``hass.config.units``;
+    the stored option and the guard's comparison stay in METERS.
+
+    ``m_per_unit`` converts display↔meters (native_value = m / m_per_unit;
+    store = display * m_per_unit). Unit strings are the literal
+    UnitOfLength values ("in"/"cm") — const.py stays HA-import-free.
+    Bounds: ~1 cm floor up to ~10 m ceiling in each system.
+    """
+    if imperial:
+        return {"unit": "in", "min": 0.5, "max": 400.0, "step": 0.5, "m_per_unit": 0.0254}
+    return {"unit": "cm", "min": 1.0, "max": 1000.0, "step": 1.0, "m_per_unit": 0.01}
+
 # ─────────────────────────────────────────────────────────────
 # cleanMode STRING values
 # ─────────────────────────────────────────────────────────────

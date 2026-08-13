@@ -118,6 +118,55 @@ class LymowAccuracyGuardSwitch(LymowEntity, SwitchEntity):
         self.coordinator.set_guard_option(CONF_GUARD_ENABLED, False)
 
 
+class LymowDockOnErrorSwitch(LymowEntity, SwitchEntity):
+    """Toggle the firmware's auto-return-to-dock-on-error feature.
+
+    Backed by `robotConfig.dockOnError` (PbRobotConfig field 22). When ON,
+    the mower automatically returns to the dock if it enters an error state
+    and no user action is taken within ~30 minutes (fixed firmware-side
+    timeout). A device-firmware setting — the official app added a UI toggle
+    for it in 3.0.7/3.0.8, but the field has existed since ≥3.0.5.
+
+    Pairs with the RTK Accuracy Guard as a second "don't leave the mower
+    stuck outside" layer: the guard reacts to degraded RTK while mowing;
+    this reacts to any error state that lingers unattended.
+    """
+
+    _attr_translation_key = "dock_on_error"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:home-import-outline"
+
+    def __init__(self, coordinator: LymowCoordinator) -> None:
+        super().__init__(coordinator, "dock_on_error")
+
+    @property
+    def available(self) -> bool:
+        # Needs a robotConfig broadcast to know the current state. Unlike
+        # the rrConfig entities we don't gate on rrConfig specifically —
+        # dockOnError is a top-level robotConfig scalar, present whenever
+        # robotConfig has been received.
+        if not super().available:
+            return False
+        return self.coordinator.state_dict.get("robotConfig") is not None
+
+    @property
+    def is_on(self) -> bool | None:
+        rc = self.coordinator.state_dict.get("robotConfig")
+        if rc is None:
+            return None
+        # proto3 explicit-presence: absence means the firmware hasn't
+        # reported it yet — treat as unknown rather than False.
+        if not rc.HasField("dockOnError"):
+            return None
+        return bool(rc.dockOnError)
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.coordinator.cmd_set_dock_on_error(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.coordinator.cmd_set_dock_on_error(False)
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
@@ -125,4 +174,5 @@ async def async_setup_entry(
     async_add_entities([
         LymowAutoRechargeSwitch(coord),
         LymowAccuracyGuardSwitch(coord),
+        LymowDockOnErrorSwitch(coord),
     ])

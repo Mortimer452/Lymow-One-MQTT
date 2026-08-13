@@ -89,6 +89,28 @@ def encode_upload_robot_config() -> bytes:
     return pb_in.SerializeToString()
 
 
+def encode_set_dock_on_error(enabled: bool) -> bytes:
+    """Encode the no-userCtrl write of `robotConfig.dockOnError` (bool).
+
+    When enabled, the firmware auto-returns the mower to the dock if it
+    enters an error state and no user action is taken for ~30 min (fixed
+    timeout, firmware-side). PbRobotConfig field 22.
+
+    The official app (3.0.8 decompiled.js:348143, arch.md §5f) sends ONLY
+    this field in robotConfig — a top-level scalar, not the rrConfig
+    sub-message — so we mirror that and never touch rrConfig here (avoids
+    the PbTimeZone replace-semantics footgun that setRR has to handle).
+    `uploadRobotConfig=true` triggers the confirmation broadcast so the
+    switch entity reads the applied state back.
+    """
+    pb_in = pb.PbInput()
+    pb_in.version = PB_VERSION_4_9
+    # No userCtrl — firmware reacts to the populated robotConfig field.
+    pb_in.robotConfig.dockOnError = enabled
+    pb_in.debugSetting.uploadRobotConfig = True
+    return pb_in.SerializeToString()
+
+
 def encode_set_rr_config(
     *,
     enable_rr: bool,
