@@ -110,11 +110,15 @@ class TestOtaObjectKey:
         from lymow_mqtt.rest import build_ota_object_key
         assert build_ota_object_key("v2.1.48.1_20260528", "") == "v2.1.48.1_20260528"
 
-    def test_prefix_without_trailing_slash_still_joins_cleanly(self) -> None:
+    def test_pure_concat_no_separator_inserted(self) -> None:
+        # Matches the app exactly (3.0.8 decompiled.js:1626040): pure
+        # "".concat(prefix, version), no slash normalization. The server
+        # always supplies the trailing slash in `prefix`; inserting our
+        # own separator would diverge from the reference implementation.
         from lymow_mqtt.rest import build_ota_object_key
         assert build_ota_object_key(
             "v2.1.50_20260813_incremental", "rk3588/v2.1.50"
-        ) == "rk3588/v2.1.50/v2.1.50_20260813_incremental"
+        ) == "rk3588/v2.1.50v2.1.50_20260813_incremental"
 
 
 class TestOtaCreateJobPath:

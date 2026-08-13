@@ -30,11 +30,16 @@ def build_ota_object_key(latest_version: str, prefix: str | None) -> str:
     the bare latestVersion the pre-2.1.50 flow sent. Verified live: the
     joined key creates a working job (arch.md §4a). Older responses carry
     no prefix — the bare key remains correct for them.
+
+    Pure concatenation, matching the app (3.0.8 decompiled.js:1626040 does
+    ``"".concat(prefix, latestVersion)`` with NO slash normalization — it
+    relies on the server always including the trailing slash in `prefix`,
+    as the observed "rk3588/v2.1.50/" does). We deliberately do NOT insert
+    a separator: diverging from the app's exact behavior risks breaking
+    where the app works.
     """
     if not prefix:
         return latest_version
-    if not prefix.endswith("/"):
-        prefix += "/"
     return prefix + latest_version
 
 
