@@ -202,6 +202,16 @@ GUARD_DEFAULT_THRESHOLD_M = 1.0
 GUARD_DEFAULT_HOLD_MIN    = 3.0
 GUARD_DEFAULT_ACTION      = "dock"
 
+# ─────────────────────────────────────────────────────────────
+# Auto headlights — config-entry option key + default.
+# When ON, the coordinator re-writes the mower's headlight window
+# (robotConfig.openLedTime/closeLedTime, arch.md §6i) every local midnight
+# to that day's sunset → sunrise. When OFF nothing is written; the mower
+# keeps whatever window it last received.
+# ─────────────────────────────────────────────────────────────
+CONF_AUTO_HEADLIGHTS    = "auto_headlights"
+AUTO_HEADLIGHTS_DEFAULT = False
+
 
 def guard_threshold_unit(imperial: bool) -> dict:
     """Display-unit config for the guard-threshold number entity.

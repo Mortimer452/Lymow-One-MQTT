@@ -111,6 +111,34 @@ def encode_set_dock_on_error(enabled: bool) -> bytes:
     return pb_in.SerializeToString()
 
 
+def encode_set_night_mode(
+    *, open_hour: int, open_minute: int, close_hour: int, close_minute: int
+) -> bytes:
+    """Encode the app's `setNightMode` write — the "Headlight mode" window.
+
+    Writes `robotConfig.openLedTime` (field 14) and `closeLedTime` (field
+    15), both `PbTimeZone {hour, minute}` **in UTC** — the official app
+    converts with getUTCHours on send and setUTCHours on display
+    (decompiled.js:328737 / 1879130). Same no-userCtrl robotConfig write as
+    setRR and dockOnError; `uploadRobotConfig=true` triggers the echo.
+
+    There is no enable flag on the wire. The app encodes "off" as both
+    times 00:00 (plus `signal=SIGNAL_TURN_OFF_CAMERA_LIGHT`), but the
+    integration never disables on the device — the auto-headlights switch
+    just stops re-writing the window — so this encoder only ever writes a
+    real window and deliberately omits `signal` and `rrConfig`.
+    """
+    pb_in = pb.PbInput()
+    pb_in.version = PB_VERSION_4_9
+    # No userCtrl — firmware reacts to the populated robotConfig fields.
+    pb_in.robotConfig.openLedTime.hour = int(open_hour)
+    pb_in.robotConfig.openLedTime.minute = int(open_minute)
+    pb_in.robotConfig.closeLedTime.hour = int(close_hour)
+    pb_in.robotConfig.closeLedTime.minute = int(close_minute)
+    pb_in.debugSetting.uploadRobotConfig = True
+    return pb_in.SerializeToString()
+
+
 def encode_set_rr_config(
     *,
     enable_rr: bool,

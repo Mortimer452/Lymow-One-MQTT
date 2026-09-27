@@ -1,6 +1,7 @@
 """Lymow switch entities."""
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
@@ -8,6 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from .const import CONF_GUARD_ENABLED, DOMAIN
 from .coordinator import LymowCoordinator
@@ -167,6 +169,77 @@ class LymowDockOnErrorSwitch(LymowEntity, SwitchEntity):
         await self.coordinator.cmd_set_dock_on_error(False)
 
 
+class LymowAutoHeadlightsSwitch(LymowEntity, SwitchEntity):
+    """Keep the mower's headlight window pinned to sunset → sunrise.
+
+    The app's "Headlight mode" is a fixed daily window stored on the device
+    (`robotConfig.openLedTime` / `closeLedTime`, UTC — arch.md §6i). With
+    this ON, the integration re-writes that window every local midnight
+    using HA's configured location, and once immediately when switched on
+    or at startup. OFF just stops writing — the mower keeps the last
+    window it was given, and the app can still edit it by hand.
+
+    HA-side setting stored in config-entry options.
+    """
+
+    _attr_translation_key = "auto_headlights"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:car-light-high"
+
+    def __init__(self, coordinator: LymowCoordinator) -> None:
+        super().__init__(coordinator, "auto_headlights")
+
+    @property
+    def available(self) -> bool:
+        # Local setting — editable even while the mower is offline; a
+        # missed write self-heals at the next midnight.
+        return True
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.auto_headlights_enabled
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Readback of the window the mower currently holds, in local time.
+
+        Sourced from the device's last robotConfig broadcast (not from what
+        we computed), so it reflects what actually took. Absent until a
+        robotConfig carrying the LED times has been received.
+        """
+        attrs: dict[str, Any] = {
+            "description": (
+                "Every night at midnight, sets the mower's headlight window "
+                "to today's sunset (on) and sunrise (off) for this Home "
+                "Assistant location. Off leaves the mower's current window "
+                "untouched."
+            )
+        }
+        rc = self.coordinator.state_dict.get("robotConfig")
+        if rc is not None and rc.HasField("openLedTime") and rc.HasField("closeLedTime"):
+            attrs["headlights_on"] = _utc_hm_to_local(
+                rc.openLedTime.hour, rc.openLedTime.minute
+            )
+            attrs["headlights_off"] = _utc_hm_to_local(
+                rc.closeLedTime.hour, rc.closeLedTime.minute
+            )
+        return attrs
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.coordinator.async_set_auto_headlights(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.coordinator.async_set_auto_headlights(False)
+
+
+def _utc_hm_to_local(hour: int, minute: int) -> str:
+    """Render a device-side UTC hour/minute as today's local HH:MM."""
+    today_utc = datetime.now(UTC).replace(
+        hour=hour, minute=minute, second=0, microsecond=0
+    )
+    return dt_util.as_local(today_utc).strftime("%H:%M")
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
@@ -175,4 +248,5 @@ async def async_setup_entry(
         LymowAutoRechargeSwitch(coord),
         LymowAccuracyGuardSwitch(coord),
         LymowDockOnErrorSwitch(coord),
+        LymowAutoHeadlightsSwitch(coord),
     ])
