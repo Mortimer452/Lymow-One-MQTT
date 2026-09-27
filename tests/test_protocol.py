@@ -435,3 +435,54 @@ class TestErrorWarningExtraction:
         msg = pb.PbOutput()
         msg.warningCodes.append(4)
         assert protocol.extract_warning_codes(msg) == [4]
+
+
+class TestEncodeSetNightMode:
+    """`setNightMode` — the app's "Headlight mode" write (decompiled.js:328737).
+
+    Writes `robotConfig.openLedTime` / `closeLedTime` (PbRobotConfig fields
+    14/15, PbTimeZone {hour, minute}) in UTC. Same no-userCtrl robotConfig
+    write pattern as setRR / dockOnError. There is no enable flag on the
+    wire — the app encodes "off" as both times 00:00 — but the integration
+    never disables on the device, so this encoder only writes a window.
+    """
+
+    def test_writes_open_and_close_times(self):
+        import lymow_extracted_pb2 as pb
+        raw = protocol.encode_set_night_mode(
+            open_hour=1, open_minute=30, close_hour=11, close_minute=0
+        )
+        msg = pb.PbInput()
+        msg.ParseFromString(raw)
+        assert msg.version == 40
+        assert not msg.HasField("userCtrl") or msg.userCtrl == 0
+        assert msg.robotConfig.openLedTime.hour == 1
+        assert msg.robotConfig.openLedTime.minute == 30
+        assert msg.robotConfig.closeLedTime.hour == 11
+        assert msg.robotConfig.closeLedTime.minute == 0
+        # Confirmation broadcast so entities can read the applied window back.
+        assert msg.debugSetting.uploadRobotConfig is True
+
+    def test_zero_minutes_still_present_on_wire(self):
+        """PbTimeZone sub-messages have REPLACE semantics on the firmware
+        (arch.md §6g) so both must be present even when all-zero-valued."""
+        import lymow_extracted_pb2 as pb
+        raw = protocol.encode_set_night_mode(
+            open_hour=0, open_minute=0, close_hour=0, close_minute=0
+        )
+        msg = pb.PbInput()
+        msg.ParseFromString(raw)
+        assert msg.robotConfig.HasField("openLedTime")
+        assert msg.robotConfig.HasField("closeLedTime")
+
+    def test_never_touches_rr_config_or_signal(self):
+        """Mirror the app's enable path exactly: no rrConfig (would reset its
+        PbTimeZone fields) and no `signal` (only sent by the app's disable path)."""
+        import lymow_extracted_pb2 as pb
+        raw = protocol.encode_set_night_mode(
+            open_hour=1, open_minute=30, close_hour=11, close_minute=0
+        )
+        msg = pb.PbInput()
+        msg.ParseFromString(raw)
+        assert not msg.robotConfig.HasField("rrConfig")
+        assert not msg.robotConfig.HasField("signal")

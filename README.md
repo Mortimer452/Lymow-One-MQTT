@@ -13,7 +13,7 @@ Whatever you do in the app, this HA integration will see it, too, most sensors u
 
 The integration is strictly-passive by design, just listens to messages sent by the mower. Message updates (battery level, time elapsed, percent complete, current zone, etc) occur roughly every 30-60 seconds during mowing, but much slower during charging (5-15 minutes)
 
-> **Status:** v0.4.1 — patch: keeps the lawn-map camera from breaking while the official Lymow app is open. Plus the v0.4.0 feature set (lawn-map camera with signal-quality heat overlay, recharge/resume battery threshold controls, Task Zones sensor) and the v0.3.x auto-recharge switch + MQTT reliability work. Tested on Lymow One. **Lymow One Plus** is expected to work but is unverified — please open an issue if you have one.
+> **Status:** v0.7.0 — adds the Auto headlights (sunset to sunrise) switch and the Auto return to dock on error switch, and fixes firmware update checks for Lymow's v2.1.50+ package scheme. Builds on the v0.6 RTK Accuracy Guard, lawn-map camera, recharge/resume controls and Task Zones sensor. Tested on Lymow One. **Lymow One Plus** is expected to work but is unverified — please open an issue if you have one.
 
 ## Features
 
@@ -21,6 +21,7 @@ The integration is strictly-passive by design, just listens to messages sent by 
 - **Device tracker integration** with live GPS coordinates showing the position of mower and RTK station in HA's map
 - **Lymow map rendering** your mow map rendered in PNG shows actual mower position, highlights zone the mower is currently located in (orange), current active mowing zones (green) and with RTK signal quality heat-map overlay. Heat map will be blank at first but should fill in over time as the mower traverses your property.
 - **Customize recharge/resume** enable/disable, set low and high battery thresholds for auto-recharge-resume
+- **Auto headlights (sunset to sunrise)** switch - when on, every night at midnight the integration sets the mower's headlight window to that day's sunset (on) and sunrise (off) for your Home Assistant location. Off leaves the mower's current headlight settings untouched.
 - **Auto return to dock on error** switch — mirrors the app's setting; the mower docks itself if it sits in an error state untouched for ~30 min (fixed firmware timeout).
 - **Live state sensors:** battery, work status, current zone (derived from mower position within map polygons), task progress, error messages.
 - **Multi-zone start service** for kicking off mows on a specific list of zones.

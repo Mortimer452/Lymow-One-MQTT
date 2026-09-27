@@ -13,21 +13,35 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from homeassistant.components import persistent_notification
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import SUN_EVENT_SUNRISE, SUN_EVENT_SUNSET
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.sun import get_astral_event_date
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util import dt as dt_util
 
-from . import protocol, signal_grid as _sg, state, state_matrix, userctrl
+from . import (
+    headlight_scheduler,
+    protocol,
+    signal_grid as _sg,
+    state,
+    state_matrix,
+    userctrl,
+)
 from .accuracy_guard import ACTION_DOCK, ACTION_RESUME, AccuracyGuard, GuardConfig
 from .auth import CognitoAuth
 from .const import (
     API_ENDPOINTS,
+    AUTO_HEADLIGHTS_DEFAULT,
+    CONF_AUTO_HEADLIGHTS,
     CONF_GUARD_ACTION,
     CONF_GUARD_ENABLED,
     CONF_GUARD_HOLD_MIN,
@@ -94,6 +108,9 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._config_entry = entry
         # RTK accuracy guard — pure state machine, fed per broadcast.
         self.accuracy_guard = AccuracyGuard()
+        # Auto headlights — unsubscribe handle for the local-midnight
+        # listener; None while the switch is off.
+        self._headlight_unsub: Callable[[], None] | None = None
 
         # State dict — single source of truth
         self._state: dict[str, Any] = {}
@@ -190,6 +207,13 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self._publish_raw(protocol.encode_upload_robot_config())
         self._last_catalog_query_at = datetime.now(UTC)
 
+        # Auto headlights: if the switch was left on, re-arm the midnight
+        # listener and push today's sunset→sunrise window now — a restart
+        # may have skipped midnight. Non-fatal if the mower is offline.
+        if self.auto_headlights_enabled:
+            self._start_headlight_listener()
+            await self._apply_headlight_window(reason="startup")
+
         # Kick off the REST poll task
         self._rest_poll_task = self.hass.async_create_background_task(
             self._rest_poll_loop(), f"{self.thing_name} REST poll"
@@ -199,6 +223,7 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Set shutdown flag BEFORE disconnecting so the disconnect callback
         # we're about to trigger doesn't kick off a reconnect attempt.
         self._shutting_down = True
+        self._stop_headlight_listener()
         if self._rest_poll_task:
             self._rest_poll_task.cancel()
             try:
@@ -805,6 +830,106 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         arrives as an updated robotConfig broadcast within ~1s.
         """
         await self._publish_raw(protocol.encode_set_dock_on_error(enabled))
+
+    # ── Auto headlights (sunset → sunrise) ──────────────────────
+    #
+    # The mower's "Headlight mode" is a fixed daily UTC window stored in
+    # robotConfig.openLedTime/closeLedTime (arch.md §6i). HA has the
+    # location and the sun math, so when the switch is on we simply
+    # re-write that window every local midnight. Off = stop writing; the
+    # device keeps its last window (we never send the app's "disable"
+    # form, which would blank the times).
+
+    @property
+    def auto_headlights_enabled(self) -> bool:
+        """Live switch state from config-entry options."""
+        opts = self._config_entry.options if self._config_entry else {}
+        return bool(opts.get(CONF_AUTO_HEADLIGHTS, AUTO_HEADLIGHTS_DEFAULT))
+
+    async def async_set_auto_headlights(self, enabled: bool) -> None:
+        """Persist the switch; arm/disarm the midnight listener.
+
+        Turning ON also pushes today's window immediately so the user sees
+        the effect tonight rather than after the first midnight. A failed
+        immediate write (mower offline) is logged, not raised — the switch
+        stays on and the next midnight retries.
+        """
+        if self._config_entry is None:
+            raise HomeAssistantError("No config entry bound; cannot save option")
+        self.hass.config_entries.async_update_entry(
+            self._config_entry,
+            options={**self._config_entry.options, CONF_AUTO_HEADLIGHTS: enabled},
+        )
+        if enabled:
+            self._start_headlight_listener()
+            await self._apply_headlight_window(reason="switch on")
+        else:
+            self._stop_headlight_listener()
+        self.async_update_listeners()
+
+    def _start_headlight_listener(self) -> None:
+        if self._headlight_unsub is not None:
+            return
+        # Local midnight (+5s so the date has definitely rolled over).
+        self._headlight_unsub = async_track_time_change(
+            self.hass, self._on_headlight_midnight, hour=0, minute=0, second=5
+        )
+
+    def _stop_headlight_listener(self) -> None:
+        if self._headlight_unsub is not None:
+            self._headlight_unsub()
+            self._headlight_unsub = None
+
+    async def _on_headlight_midnight(self, _now: datetime) -> None:
+        await self._apply_headlight_window(reason="midnight")
+
+    def headlight_window_for_today(self) -> headlight_scheduler.HeadlightWindow | None:
+        """Today's sunset→sunrise window (UTC h/m) from HA's configured location.
+
+        None when astral reports no sunrise or sunset for the day (polar
+        latitudes) — there's nothing sensible to write in that case.
+        """
+        today = dt_util.now().date()
+        sunrise = get_astral_event_date(self.hass, SUN_EVENT_SUNRISE, today)
+        sunset = get_astral_event_date(self.hass, SUN_EVENT_SUNSET, today)
+        if sunrise is None or sunset is None:
+            return None
+        return headlight_scheduler.window_from_sun(sunrise=sunrise, sunset=sunset)
+
+    async def _apply_headlight_window(self, *, reason: str) -> None:
+        """Write today's window to the mower. Never raises."""
+        window = self.headlight_window_for_today()
+        if window is None:
+            _LOGGER.warning(
+                "Auto headlights (%s): no sunrise/sunset today at this "
+                "location; skipping",
+                reason,
+            )
+            return
+        try:
+            await self._publish_raw(
+                protocol.encode_set_night_mode(
+                    open_hour=window.open_hour,
+                    open_minute=window.open_minute,
+                    close_hour=window.close_hour,
+                    close_minute=window.close_minute,
+                )
+            )
+        except HomeAssistantError as e:
+            _LOGGER.warning(
+                "Auto headlights (%s): write failed (%s); will retry at next midnight",
+                reason,
+                e,
+            )
+            return
+        _LOGGER.debug(
+            "Auto headlights (%s): on %02d:%02d UTC, off %02d:%02d UTC",
+            reason,
+            window.open_hour,
+            window.open_minute,
+            window.close_hour,
+            window.close_minute,
+        )
 
     async def _wait_for_state(self, expected: set[int], timeout: float) -> bool:
         """Wait until robotInfo.workStatus or robotStatus is in expected, or timeout.

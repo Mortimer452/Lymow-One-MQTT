@@ -81,7 +81,8 @@
     "switch": {
       "auto_recharge": {"name": "Auto recharge & resume"},
       "accuracy_guard": {"name": "RTK Accuracy Guard"},
-      "dock_on_error": {"name": "Auto return to dock on error"}
+      "dock_on_error": {"name": "Auto return to dock on error"},
+      "auto_headlights": {"name": "Auto headlights (sunset to sunrise)"}
     },
     "number": {
       "recharge_threshold": {"name": "Auto-dock below"},
