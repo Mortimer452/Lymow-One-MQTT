@@ -174,7 +174,7 @@ class LymowAutoHeadlightsSwitch(LymowEntity, SwitchEntity):
 
     The app's "Headlight mode" is a fixed daily window stored on the device
     (`robotConfig.openLedTime` / `closeLedTime`, UTC — arch.md §6i). With
-    this ON, the integration re-writes that window every local midnight
+    this ON, the integration re-writes that window every night at 3 AM local
     using HA's configured location, and once immediately when switched on
     or at startup. OFF just stops writing — the mower keeps the last
     window it was given, and the app can still edit it by hand.
@@ -192,7 +192,7 @@ class LymowAutoHeadlightsSwitch(LymowEntity, SwitchEntity):
     @property
     def available(self) -> bool:
         # Local setting — editable even while the mower is offline; a
-        # missed write self-heals at the next midnight.
+        # missed write self-heals at the next nightly run.
         return True
 
     @property
@@ -209,7 +209,7 @@ class LymowAutoHeadlightsSwitch(LymowEntity, SwitchEntity):
         """
         attrs: dict[str, Any] = {
             "description": (
-                "Every night at midnight, sets the mower's headlight window "
+                "Every night at 3:00 AM, sets the mower's headlight window "
                 "to today's sunset (on) and sunrise (off) for this Home "
                 "Assistant location. Off leaves the mower's current window "
                 "untouched."

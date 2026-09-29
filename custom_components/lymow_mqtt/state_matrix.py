@@ -23,6 +23,7 @@ from dataclasses import dataclass
 
 from .const import (
     USER_CTRL_CLEAN,
+    USER_CTRL_DOCK,
     USER_CTRL_PAUSE,
     USER_CTRL_PAUSE_DOCK,
     USER_CTRL_RECHARGE_DOCK,
@@ -167,13 +168,21 @@ STATE_MATRIX: list[StateRow] = [
 
     # ─────────────────────────────────────────────────────────────────
     # 2b. Physical WAITING — mower stopped away from dock (e.g. post-cancel)
+    #
+    # Dock here is plain DOCK(2), NOT the "keep progress" RECHARGE_DOCK(33)
+    # used elsewhere: with no task in flight there is nothing to preserve,
+    # and the firmware silently ignores 33 in this state (GitHub #28 —
+    # Lymow One Plus, fw 2.1.50.1; the HA Dock button did nothing while
+    # dock_cancel_task's DOCK(2) moved the mower immediately). This also
+    # matches the official app, which sends DOCK from rs=WAITING
+    # (arch.md §6d).
     # ─────────────────────────────────────────────────────────────────
     StateRow(
         robot_status=WORK_STATUS_WAITING,
         activity=ACTIVITY_PAUSED,
         start_mowing=USER_CTRL_CLEAN,
-        dock=USER_CTRL_RECHARGE_DOCK,
-        note="rs=WAITING — stopped in yard, Start fires fresh CLEAN(1), Dock sends home",
+        dock=USER_CTRL_DOCK,
+        note="rs=WAITING — stopped in yard, Start fires fresh CLEAN(1), Dock sends DOCK(2)",
     ),
 
     # ─────────────────────────────────────────────────────────────────

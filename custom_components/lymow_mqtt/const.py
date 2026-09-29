@@ -205,7 +205,7 @@ GUARD_DEFAULT_ACTION      = "dock"
 # ─────────────────────────────────────────────────────────────
 # Auto headlights — config-entry option key + default.
 # When ON, the coordinator re-writes the mower's headlight window
-# (robotConfig.openLedTime/closeLedTime, arch.md §6i) every local midnight
+# (robotConfig.openLedTime/closeLedTime, arch.md §6i) every night at 3 AM local
 # to that day's sunset → sunrise. When OFF nothing is written; the mower
 # keeps whatever window it last received.
 # ─────────────────────────────────────────────────────────────
