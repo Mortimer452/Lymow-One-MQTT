@@ -13,7 +13,7 @@ Whatever you do in the app, this HA integration will see it, too, most sensors u
 
 The integration is strictly-passive by design, just listens to messages sent by the mower. Message updates (battery level, time elapsed, percent complete, current zone, etc) occur roughly every 30-60 seconds during mowing, but much slower during charging (5-15 minutes)
 
-> **Status:** v0.7.0 — adds the Auto headlights (sunset to sunrise) switch and the Auto return to dock on error switch, and fixes firmware update checks for Lymow's v2.1.50+ package scheme. Builds on the v0.6 RTK Accuracy Guard, lawn-map camera, recharge/resume controls and Task Zones sensor. Tested on Lymow One. **Lymow One Plus** is expected to work but is unverified — please open an issue if you have one.
+> **Status:** v0.7.1 — fixes the Dock button doing nothing when the mower is idle in the yard (GitHub #28), and moves the auto-headlights nightly update to 3:00 AM to stay clear of daylight-saving changeovers. v0.7.0 added the Auto headlights (sunset to sunrise) switch and the Auto return to dock on error switch, and fixed firmware update checks for Lymow's v2.1.50+ package scheme. Builds on the v0.6 RTK Accuracy Guard, lawn-map camera, recharge/resume controls and Task Zones sensor. Tested on Lymow One; a **Lymow One Plus** user has confirmed state, map, camera, device tracker and commands working (see #28) — please open an issue if you hit anything model-specific.
 
 ## Features
 
