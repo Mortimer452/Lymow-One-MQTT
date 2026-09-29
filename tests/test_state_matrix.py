@@ -13,6 +13,7 @@ import pytest
 from lymow_mqtt import state_matrix
 from lymow_mqtt.const import (
     USER_CTRL_CLEAN,
+    USER_CTRL_DOCK,
     USER_CTRL_PAUSE,
     USER_CTRL_PAUSE_DOCK,
     USER_CTRL_RECHARGE_DOCK,
@@ -186,7 +187,11 @@ class TestIdleStates:
         assert row.activity == "paused"
         assert row.start_mowing == USER_CTRL_CLEAN
         assert row.pause is None
-        assert row.dock == USER_CTRL_RECHARGE_DOCK
+        # Plain DOCK(2), not RECHARGE_DOCK(33): with no task in flight there
+        # is no progress to preserve and the firmware silently ignores 33
+        # (GitHub #28, Lymow One Plus fw 2.1.50.1). Matches the app, which
+        # sends DOCK from rs=WAITING (arch.md §6d).
+        assert row.dock == USER_CTRL_DOCK
 
     def test_ws_none_idle_offers_only_start(self):
         row = state_matrix.lookup(
