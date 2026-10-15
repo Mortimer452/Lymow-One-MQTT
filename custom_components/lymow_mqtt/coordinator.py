@@ -108,8 +108,8 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._config_entry = entry
         # RTK accuracy guard — pure state machine, fed per broadcast.
         self.accuracy_guard = AccuracyGuard()
-        # Auto headlights — unsubscribe handle for the local-midnight
-        # listener; None while the switch is off.
+        # Auto headlights — unsubscribe handle for the nightly (3 AM
+        # local) listener; None while the switch is off.
         self._headlight_unsub: Callable[[], None] | None = None
 
         # State dict — single source of truth
@@ -207,9 +207,9 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         await self._publish_raw(protocol.encode_upload_robot_config())
         self._last_catalog_query_at = datetime.now(UTC)
 
-        # Auto headlights: if the switch was left on, re-arm the midnight
+        # Auto headlights: if the switch was left on, re-arm the nightly
         # listener and push today's sunset→sunrise window now — a restart
-        # may have skipped midnight. Non-fatal if the mower is offline.
+        # may have skipped the 3 AM run. Non-fatal if the mower is offline.
         if self.auto_headlights_enabled:
             self._start_headlight_listener()
             await self._apply_headlight_window(reason="startup")
@@ -836,7 +836,7 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # The mower's "Headlight mode" is a fixed daily UTC window stored in
     # robotConfig.openLedTime/closeLedTime (arch.md §6i). HA has the
     # location and the sun math, so when the switch is on we simply
-    # re-write that window every local midnight. Off = stop writing; the
+    # re-write that window every night at 3 AM local. Off = stop writing; the
     # device keeps its last window (we never send the app's "disable"
     # form, which would blank the times).
 
@@ -847,12 +847,12 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return bool(opts.get(CONF_AUTO_HEADLIGHTS, AUTO_HEADLIGHTS_DEFAULT))
 
     async def async_set_auto_headlights(self, enabled: bool) -> None:
-        """Persist the switch; arm/disarm the midnight listener.
+        """Persist the switch; arm/disarm the nightly listener.
 
         Turning ON also pushes today's window immediately so the user sees
-        the effect tonight rather than after the first midnight. A failed
+        the effect tonight rather than after the first nightly run. A failed
         immediate write (mower offline) is logged, not raised — the switch
-        stays on and the next midnight retries.
+        stays on and the next nightly run retries.
         """
         if self._config_entry is None:
             raise HomeAssistantError("No config entry bound; cannot save option")
@@ -870,9 +870,14 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _start_headlight_listener(self) -> None:
         if self._headlight_unsub is not None:
             return
-        # Local midnight (+5s so the date has definitely rolled over).
+        # 03:00 local — outside the DST changeover window; see
+        # headlight_scheduler.NIGHTLY_UPDATE_HOUR for the reasoning.
         self._headlight_unsub = async_track_time_change(
-            self.hass, self._on_headlight_midnight, hour=0, minute=0, second=5
+            self.hass,
+            self._on_headlight_nightly,
+            hour=headlight_scheduler.NIGHTLY_UPDATE_HOUR,
+            minute=0,
+            second=0,
         )
 
     def _stop_headlight_listener(self) -> None:
@@ -880,8 +885,8 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._headlight_unsub()
             self._headlight_unsub = None
 
-    async def _on_headlight_midnight(self, _now: datetime) -> None:
-        await self._apply_headlight_window(reason="midnight")
+    async def _on_headlight_nightly(self, _now: datetime) -> None:
+        await self._apply_headlight_window(reason="nightly")
 
     def headlight_window_for_today(self) -> headlight_scheduler.HeadlightWindow | None:
         """Today's sunset→sunrise window (UTC h/m) from HA's configured location.
@@ -917,7 +922,7 @@ class LymowCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         except HomeAssistantError as e:
             _LOGGER.warning(
-                "Auto headlights (%s): write failed (%s); will retry at next midnight",
+                "Auto headlights (%s): write failed (%s); will retry at next nightly run",
                 reason,
                 e,
             )

@@ -44,3 +44,16 @@ class TestWindowFromSun:
                 sunrise=datetime(2026, 5, 8, 6, 0),
                 sunset=datetime(2026, 5, 8, 20, 30, tzinfo=UTC),
             )
+
+
+class TestNightlyUpdateHour:
+    def test_nightly_update_runs_at_3am_local(self):
+        assert hs.NIGHTLY_UPDATE_HOUR == 3
+
+    def test_nightly_update_hour_avoids_dst_transition_window(self):
+        """US clocks jump at 02:00 local (spring: 02:00→03:00, so 02:xx never
+        exists; fall: 01:xx repeats). EU jumps at 01:00 UTC. Any hour in
+        01:00–02:59 can fire twice or not at all on a changeover night, so
+        the nightly write must sit outside that window."""
+        assert hs.NIGHTLY_UPDATE_HOUR not in (1, 2)
+        assert 0 <= hs.NIGHTLY_UPDATE_HOUR <= 23

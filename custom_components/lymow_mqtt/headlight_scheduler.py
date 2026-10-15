@@ -3,11 +3,12 @@
 The mower's "Headlight mode" (app: NightModeScreen) is a fixed daily
 window stored on the device as `robotConfig.openLedTime` / `closeLedTime`,
 each a `PbTimeZone {hour, minute}` in **UTC** (decompiled.js:328737).
-The auto-headlights feature re-writes that window every local midnight so
-the lights come on at that day's sunset and go off at sunrise.
+The auto-headlights feature re-writes that window every night at
+NIGHTLY_UPDATE_HOUR local so the lights come on at that day's sunset and
+go off at sunrise.
 
 This module is deliberately free of Home Assistant imports so the
-conversion can be unit-tested. The HA glue — astral lookup, the midnight
+conversion can be unit-tested. The HA glue — astral lookup, the nightly
 time-change listener, and the MQTT publish — lives in coordinator.py.
 """
 
@@ -15,6 +16,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+
+# Local hour at which the nightly re-write fires. 03:00 deliberately sits
+# outside the 01:00–02:59 window where DST changeovers happen (US clocks
+# jump at 02:00 local; EU at 01:00 UTC), so the listener fires exactly
+# once on changeover nights instead of twice (fall back) or never (spring
+# forward). Midnight would also be safe, but 3 AM keeps clear of any
+# date-rollover edge cases in the sun lookup as well.
+NIGHTLY_UPDATE_HOUR = 3
 
 
 @dataclass(frozen=True)
